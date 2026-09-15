@@ -17,7 +17,6 @@ import db, {
   readNestedState,
   replaceNestedState,
   getOwnedTaskIds,
-  seedDefaultsIfEmpty,
   seedUserDefaults,
   normalizeTaskList,
   ALLOWED_DAY_RE
@@ -488,8 +487,6 @@ app.post("/api/restore", requireAuth, (req, res) => {
   tx();
   res.json({ ok: true, lists: lists.length });
 });
-
-seedDefaultsIfEmpty();
 
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));

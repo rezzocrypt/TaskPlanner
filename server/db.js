@@ -39,6 +39,12 @@ if (userCols.length && userCols.some((c) => c.name === "uid")) {
 }
 
 db.exec(`
+  DROP TABLE IF EXISTS default_template_task_days;
+  DROP TABLE IF EXISTS default_template_tasks;
+  DROP TABLE IF EXISTS default_templates;
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     owner      INTEGER NOT NULL,
@@ -83,26 +89,6 @@ db.exec(`
     list_id    INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (owner, list_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS default_templates (
-    key  TEXT PRIMARY KEY,
-    name TEXT NOT NULL DEFAULT ''
-  );
-
-  CREATE TABLE IF NOT EXISTS default_template_tasks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    template_key TEXT NOT NULL REFERENCES default_templates(key) ON DELETE CASCADE,
-    position     INTEGER NOT NULL DEFAULT 0,
-    text         TEXT NOT NULL,
-    start_time   TEXT NOT NULL DEFAULT '',
-    end_time     TEXT NOT NULL DEFAULT ''
-  );
-
-  CREATE TABLE IF NOT EXISTS default_template_task_days (
-    task_id INTEGER NOT NULL REFERENCES default_template_tasks(id) ON DELETE CASCADE,
-    day     INTEGER NOT NULL,
-    PRIMARY KEY (task_id, day)
   );
 
   CREATE TABLE IF NOT EXISTS user_meta (
@@ -309,76 +295,42 @@ export function getOwnedTaskIds(owner) {
   );
 }
 
-export function seedDefaultsIfEmpty() {
-  const count = db.prepare("SELECT COUNT(*) AS n FROM default_templates").get().n;
-  if (count > 0) return;
+export function seedUserDefaults(ownerId) {
+  const meta = db.prepare("SELECT seeded FROM user_meta WHERE owner = ?").get(ownerId);
+  if (meta && meta.seeded) return false;
   const seedPath = path.join(__dirname, "seed", "default-lists.json");
   let data;
   try {
     data = JSON.parse(fs.readFileSync(seedPath, "utf8"));
   } catch (e) {
-    return;
+    return false;
   }
   const items = Array.isArray(data.defaultLists) ? data.defaultLists : [];
-  if (!items.length) return;
-  const insTemplate = db.prepare("INSERT OR IGNORE INTO default_templates (key, name) VALUES (?, ?)");
-  const insTask = db.prepare(
-    "INSERT INTO default_template_tasks (template_key, position, text, start_time, end_time) VALUES (?, ?, ?, ?, ?)"
-  );
-  const insDay = db.prepare(
-    "INSERT OR IGNORE INTO default_template_task_days (task_id, day) VALUES (?, ?)"
-  );
-  const tx = db.transaction(() => {
-    for (const item of items) {
-      if (!item || !item.key) continue;
-      insTemplate.run(item.key, String(item.name || ""));
-      normalizeTaskList(item.tasks).forEach((t) => {
-        const res = insTask.run(item.key, t.position, t.text, t.start, t.end);
-        for (const d of t.days) insDay.run(res.lastInsertRowid, d);
-      });
-    }
-  });
-  tx();
-}
-
-export function seedUserDefaults(ownerId) {
-  const meta = db.prepare("SELECT seeded FROM user_meta WHERE owner = ?").get(ownerId);
-  if (meta && meta.seeded) return false;
+  if (!items.length) return false;
   db.prepare(
     "INSERT INTO user_meta (owner, seeded) VALUES (?, 1) ON CONFLICT (owner) DO UPDATE SET seeded = 1"
   ).run(ownerId);
-  const templates = db.prepare("SELECT key, name FROM default_templates ORDER BY rowid").all();
   const tx = db.transaction(() => {
-    for (const tpl of templates) {
-      const listId = db.prepare("INSERT INTO lists (owner, name) VALUES (?, ?)").run(ownerId, tpl.name).lastInsertRowid;
-      const taskRows = db
-        .prepare(
-          "SELECT id, text, start_time, end_time FROM default_template_tasks WHERE template_key = ? ORDER BY position"
-        )
-        .all(tpl.key);
-      const dayRows = taskRows.length
-        ? db.prepare(
-            `SELECT task_id, day FROM default_template_task_days WHERE task_id IN (${taskRows
-              .map(() => "?")
-              .join(",")})`
-          ).all(...taskRows.map((r) => r.id))
-        : [];
-      const daysByTask = {};
-      for (const r of dayRows) {
-        if (!daysByTask[r.task_id]) daysByTask[r.task_id] = [];
-        daysByTask[r.task_id].push(r.day);
-      }
-      storeTasks(listId, taskRows.map((t) => ({
-        id: null,
-        text: t.text,
-        start: t.start_time,
-        end: t.end_time,
-        days: daysByTask[t.id] || []
-      })));
+    for (const item of items) {
+      if (!item || !item.name) continue;
+      const listId = db
+        .prepare("INSERT INTO lists (owner, name) VALUES (?, ?)")
+        .run(ownerId, String(item.name))
+        .lastInsertRowid;
+      storeTasks(
+        listId,
+        normalizeTaskList(item.tasks).map((t) => ({
+          id: null,
+          text: t.text,
+          start: t.start,
+          end: t.end,
+          days: t.days
+        }))
+      );
     }
   });
   tx();
-  return templates.length > 0;
+  return true;
 }
 
 export default db;
