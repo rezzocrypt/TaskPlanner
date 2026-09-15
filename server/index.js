@@ -1,5 +1,9 @@
 import express from "express";
-import { randomBytes } from "node:crypto";
+import {
+  randomBytes,
+  scryptSync,
+  timingSafeEqual
+} from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +16,9 @@ const PORT = process.env.PORT || 3000;
 const UID_RE = /^[a-zA-Z0-9_-]{6,64}$/;
 const FILE_RE = /^[\p{L}\p{N}._\-\s]+\.json$/iu;
 const DAY_RE = /^\d{4}-\d{1,2}-\d{1,2}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SESSION_COOKIE = "weekplan-session";
+const SESSION_DAYS = 30;
 
 function randomUid() {
   return randomBytes(15).toString("base64url");
@@ -21,19 +28,86 @@ function randomToken() {
   return randomBytes(12).toString("base64url");
 }
 
-function uidFromRequest(req) {
-  const m = /(?:^|;\s*)weekplan-uid=([^;]+)/.exec(req.headers.cookie || "");
-  if (!m) return "";
-  const raw = decodeURIComponent(m[1]);
-  return UID_RE.test(raw) ? raw : "";
+function sessionToken() {
+  return randomBytes(32).toString("base64url");
 }
 
-function requireUid(req, res, next) {
-  const uid = uidFromRequest(req);
-  if (!uid) {
-    return res.status(401).json({ error: "Нет идентификатора пользователя" });
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return "scrypt$" + salt + "$" + hash;
+}
+
+function verifyPassword(password, stored) {
+  const parts = String(stored || "").split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  const test = scryptSync(password, parts[1], 64);
+  const expected = Buffer.from(parts[2], "hex");
+  return expected.length === test.length && timingSafeEqual(test, expected);
+}
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    const key = part.slice(0, i).trim();
+    const val = part.slice(i + 1).trim();
+    if (key) out[key] = val;
   }
-  req.uid = uid;
+  return out;
+}
+
+function clearSessionCookie(res) {
+  res.append(
+    "Set-Cookie",
+    SESSION_COOKIE + "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+  );
+}
+
+function createSession(uid, res) {
+  const token = sessionToken();
+  const now = Date.now();
+  const expiresAt = now + SESSION_DAYS * 24 * 60 * 60 * 1000;
+  db.prepare("INSERT INTO sessions (token, uid, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .run(token, uid, now, expiresAt);
+  res.append(
+    "Set-Cookie",
+    SESSION_COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + SESSION_DAYS * 24 * 60 * 60
+  );
+  return token;
+}
+
+function cleanupSessions() {
+  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
+}
+
+function resolveSession(req) {
+  const cookies = parseCookies(req);
+  const token = cookies[SESSION_COOKIE];
+  if (!token) return null;
+  const row = db.prepare(
+    "SELECT s.uid, u.email FROM sessions s JOIN users u ON u.uid = s.uid WHERE s.token = ? AND s.expires_at > ?"
+  ).get(token, Date.now());
+  if (!row) return null;
+  return { uid: row.uid, email: row.email };
+}
+
+function uidFromRequest(req) {
+  const session = resolveSession(req);
+  if (session) return session.uid;
+  const cookies = parseCookies(req);
+  const uid = decodeURIComponent(cookies["weekplan-uid"] || "");
+  return UID_RE.test(uid) ? uid : "";
+}
+
+function requireAuth(req, res, next) {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(401).json({ error: "Требуется вход" });
+  }
+  req.uid = session.uid;
+  req.email = session.email;
   next();
 }
 
@@ -91,20 +165,78 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 app.post("/api/me", (req, res) => {
-  let uid = uidFromRequest(req);
-  const isNew = !uid;
-  if (!uid) {
-    uid = randomUid();
-    res.setHeader(
+  const session = resolveSession(req);
+  const cookies = parseCookies(req);
+  let anon = decodeURIComponent(cookies["weekplan-uid"] || "");
+  if (!UID_RE.test(anon)) {
+    anon = randomUid();
+    res.append(
       "Set-Cookie",
-      "weekplan-uid=" + encodeURIComponent(uid) + "; Path=/; Max-Age=31536000; SameSite=Lax"
+      "weekplan-uid=" + encodeURIComponent(anon) + "; Path=/; Max-Age=31536000; SameSite=Lax"
     );
   }
+  const uid = session ? session.uid : anon;
   seedUserDefaults(uid);
-  res.json({ uid, isNew });
+  res.json({
+    uid,
+    email: session ? session.email : null,
+    anonymous: !session,
+    isNew: !cookies["weekplan-uid"]
+  });
 });
 
-app.get("/api/lists", requireUid, (req, res) => {
+app.post("/api/register", (req, res) => {
+  cleanupSessions();
+  if (resolveSession(req)) {
+    return res.status(409).json({ error: "Вы уже вошли в систему" });
+  }
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const password = String(req.body.password || "");
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: "Почта не похожа на email" });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: "Пароль должен быть не короче 6 символов" });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  if (existing) {
+    return res.status(409).json({ error: "Пользователь с такой почтой уже существует" });
+  }
+  const cookies = parseCookies(req);
+  let uid = decodeURIComponent(cookies["weekplan-uid"] || "");
+  if (!UID_RE.test(uid) || db.prepare("SELECT id FROM users WHERE uid = ?").get(uid)) {
+    uid = randomUid();
+  }
+  db.prepare("INSERT INTO users (email, password, uid) VALUES (?, ?, ?)")
+    .run(email, hashPassword(password), uid);
+  createSession(uid, res);
+  seedUserDefaults(uid);
+  res.status(201).json({ uid, email });
+});
+
+app.post("/api/login", (req, res) => {
+  cleanupSessions();
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const password = String(req.body.password || "");
+  const user = db.prepare("SELECT uid, email, password FROM users WHERE email = ?").get(email);
+  if (!user || !verifyPassword(password, user.password)) {
+    return res.status(401).json({ error: "Неверная почта или пароль" });
+  }
+  createSession(user.uid, res);
+  res.json({ uid: user.uid, email: user.email });
+});
+
+app.post("/api/logout", (req, res) => {
+  const cookies = parseCookies(req);
+  const token = cookies[SESSION_COOKIE];
+  if (token) {
+    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+  }
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get("/api/lists", requireAuth, (req, res) => {
   const seeded = seedUserDefaults(req.uid);
   const rows = db.prepare("SELECT file FROM lists WHERE owner = ? ORDER BY rowid").all(req.uid);
   const colorRows = db.prepare("SELECT file, color FROM list_colors WHERE owner = ?").all(req.uid);
@@ -127,14 +259,14 @@ app.get("/api/lists", requireUid, (req, res) => {
   res.json({ lists, seeded });
 });
 
-app.get("/api/lists/:file", requireUid, (req, res) => {
+app.get("/api/lists/:file", requireAuth, (req, res) => {
   const row = getListRow(req.uid, req.params.file);
   if (!row) return res.status(404).json({ error: "Список не найден" });
   const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND file = ?").get(req.uid, req.params.file);
   res.json({ ...listMeta(req.params.file, row.content), color: colorRow && colorRow.color ? colorRow.color : "" });
 });
 
-app.post("/api/lists", requireUid, (req, res) => {
+app.post("/api/lists", requireAuth, (req, res) => {
   const file = String(req.body.file || "").trim();
   const content = String(req.body.content || "");
   if (!FILE_RE.test(file)) {
@@ -156,7 +288,7 @@ app.post("/api/lists", requireUid, (req, res) => {
   res.json({ ...listMeta(file, content), color: "" });
 });
 
-app.put("/api/lists/:file", requireUid, (req, res) => {
+app.put("/api/lists/:file", requireAuth, (req, res) => {
   const content = String(req.body.content || "");
   let parsed;
   try {
@@ -175,7 +307,7 @@ app.put("/api/lists/:file", requireUid, (req, res) => {
   res.json({ ...listMeta(req.params.file, content), color: colorRow && colorRow.color ? colorRow.color : "" });
 });
 
-app.delete("/api/lists/:file", requireUid, (req, res) => {
+app.delete("/api/lists/:file", requireAuth, (req, res) => {
   const file = req.params.file;
   if (!getListRow(req.uid, file)) return res.status(404).json({ error: "Список не найден" });
   const tx = db.transaction(() => {
@@ -188,7 +320,7 @@ app.delete("/api/lists/:file", requireUid, (req, res) => {
   res.json({ ok: true });
 });
 
-app.put("/api/lists/:file/color", requireUid, (req, res) => {
+app.put("/api/lists/:file/color", requireAuth, (req, res) => {
   const color = String(req.body.color || "").trim();
   const file = req.params.file;
   if (!getListRow(req.uid, file)) return res.status(404).json({ error: "Список не найден" });
@@ -202,11 +334,11 @@ app.put("/api/lists/:file/color", requireUid, (req, res) => {
   res.json({ ok: true, color });
 });
 
-app.get("/api/state", requireUid, (req, res) => {
+app.get("/api/state", requireAuth, (req, res) => {
   res.json({ state: readNestedState(req.uid) });
 });
 
-app.put("/api/state", requireUid, (req, res) => {
+app.put("/api/state", requireAuth, (req, res) => {
   const state = req.body && req.body.state;
   if (!state || typeof state !== "object" || Array.isArray(state)) {
     return res.status(400).json({ error: "Ожидается объект state" });
@@ -215,7 +347,7 @@ app.put("/api/state", requireUid, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/state/toggle", requireUid, (req, res) => {
+app.post("/api/state/toggle", requireAuth, (req, res) => {
   const { day, file, task, done } = req.body || {};
   if (!DAY_RE.test(String(day || ""))) {
     return res.status(400).json({ error: "Недопустимая дата" });
@@ -235,7 +367,7 @@ app.post("/api/state/toggle", requireUid, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/shares", requireUid, (req, res) => {
+app.post("/api/shares", requireAuth, (req, res) => {
   const file = String(req.body.file || "").trim();
   if (!FILE_RE.test(file)) return res.status(400).json({ error: "Недопустимое имя файла" });
   if (!getListRow(req.uid, file)) return res.status(404).json({ error: "Список не найден" });
@@ -249,7 +381,7 @@ app.post("/api/shares", requireUid, (req, res) => {
   res.json({ token, file });
 });
 
-app.delete("/api/shares/:file", requireUid, (req, res) => {
+app.delete("/api/shares/:file", requireAuth, (req, res) => {
   db.prepare("DELETE FROM shares WHERE owner = ? AND file = ?").run(req.uid, req.params.file);
   res.json({ ok: true });
 });
@@ -279,11 +411,11 @@ app.get("/api/users/:uid/state", (req, res) => {
   res.json({ state: readNestedState(uid) });
 });
 
-app.get("/api/backup", requireUid, (req, res) => {
+app.get("/api/backup", requireAuth, (req, res) => {
   res.json(getBackupPayload(req.uid));
 });
 
-app.post("/api/restore", requireUid, (req, res) => {
+app.post("/api/restore", requireAuth, (req, res) => {
   const data = req.body;
   if (!data || typeof data !== "object") {
     return res.status(400).json({ error: "Файл бэкапа повреждён или не распознан" });

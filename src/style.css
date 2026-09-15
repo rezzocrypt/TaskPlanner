@@ -278,6 +278,90 @@ header {
   margin-left: auto;
 }
 
+.auth-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-email {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.auth-tab.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-submit {
+  margin-top: 16px;
+  font-size: 14px;
+}
+
+.auth-note {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.auth-screen {
+  display: flex;
+  justify-content: center;
+  padding: 48px 16px;
+}
+
+.auth-screen-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 24px;
+}
+
+.auth-screen-title {
+  margin: 0 0 6px;
+  font-size: 19px;
+}
+
+.auth-screen-sub {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .btn-stats {
   display: inline-flex;
   align-items: center;
