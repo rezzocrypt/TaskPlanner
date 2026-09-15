@@ -95,7 +95,7 @@ function createSession(userId, res) {
   const token = sessionToken();
   const now = Date.now();
   const expiresAt = now + SESSION_DAYS * 24 * 60 * 60 * 1000;
-  db.prepare("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+  db.prepare("INSERT INTO user_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
     .run(token, userId, now, expiresAt);
   res.append(
     "Set-Cookie",
@@ -105,7 +105,7 @@ function createSession(userId, res) {
 }
 
 function cleanupSessions() {
-  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
+  db.prepare("DELETE FROM user_sessions WHERE expires_at < ?").run(Date.now());
 }
 
 function resolveSession(req) {
@@ -113,7 +113,7 @@ function resolveSession(req) {
   const token = cookies[SESSION_COOKIE];
   if (!token) return null;
   const row = db.prepare(
-    "SELECT s.user_id, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?"
+    "SELECT s.user_id, u.email FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?"
   ).get(token, Date.now());
   if (!row) return null;
   return { id: row.user_id, email: row.email };
@@ -253,7 +253,7 @@ app.post("/api/logout", (req, res) => {
   const cookies = parseCookies(req);
   const token = cookies[SESSION_COOKIE];
   if (token) {
-    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    db.prepare("DELETE FROM user_sessions WHERE token = ?").run(token);
   }
   clearSessionCookie(res);
   res.json({ ok: true });
@@ -263,7 +263,7 @@ app.get("/api/lists", requireAuth, (req, res) => {
   const seeded = seedUserDefaults(req.userId);
   const rows = db.prepare("SELECT id, name FROM lists WHERE owner = ? ORDER BY rowid").all(req.userId);
   const colorRows = db.prepare("SELECT list_id, color FROM list_colors WHERE owner = ?").all(req.userId);
-  const shareRows = db.prepare("SELECT list_id, token FROM shares WHERE owner = ?").all(req.userId);
+  const shareRows = db.prepare("SELECT list_id, token FROM list_shares WHERE owner = ?").all(req.userId);
   const colorByList = {};
   for (const c of colorRows) colorByList[c.list_id] = c.color;
   const tokenByList = {};
@@ -351,10 +351,10 @@ app.post("/api/state/toggle", requireAuth, (req, res) => {
     return res.status(404).json({ error: "Задача не найдена" });
   }
   if (done) {
-    db.prepare("INSERT OR REPLACE INTO day_state (owner, day, task_id) VALUES (?, ?, ?)")
+db.prepare("INSERT OR REPLACE INTO user_task_state (owner, day, task_id) VALUES (?, ?, ?)")
       .run(req.userId, String(day), id);
   } else {
-    db.prepare("DELETE FROM day_state WHERE owner = ? AND day = ? AND task_id = ?")
+    db.prepare("DELETE FROM user_task_state WHERE owner = ? AND day = ? AND task_id = ?")
       .run(req.userId, String(day), id);
   }
   res.json({ ok: true });
@@ -364,10 +364,10 @@ app.post("/api/shares", requireAuth, (req, res) => {
   const id = parseId(req.body && req.body.listId);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
   if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
-  let token = db.prepare("SELECT token FROM shares WHERE owner = ? AND list_id = ?").get(req.userId, id);
+  let token = db.prepare("SELECT token FROM list_shares WHERE owner = ? AND list_id = ?").get(req.userId, id);
   if (!token) {
     token = randomToken();
-    db.prepare("INSERT INTO shares (token, owner, list_id) VALUES (?, ?, ?)").run(token, req.userId, id);
+    db.prepare("INSERT INTO list_shares (token, owner, list_id) VALUES (?, ?, ?)").run(token, req.userId, id);
   } else {
     token = token.token;
   }
@@ -377,14 +377,14 @@ app.post("/api/shares", requireAuth, (req, res) => {
 app.delete("/api/shares/:id", requireAuth, (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  db.prepare("DELETE FROM shares WHERE owner = ? AND list_id = ?").run(req.userId, id);
+  db.prepare("DELETE FROM list_shares WHERE owner = ? AND list_id = ?").run(req.userId, id);
   res.json({ ok: true });
 });
 
 app.get("/api/shares/:token", (req, res) => {
   const token = String(req.params.token || "").replace(/[^a-zA-Z0-9_-]/g, "");
   if (!token) return res.status(400).json({ error: "Недопустимый токен" });
-  const share = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
+  const share = db.prepare("SELECT * FROM list_shares WHERE token = ?").get(token);
   if (!share) return res.status(404).json({ error: "Средний список не найден" });
   const list = readList(share.owner, share.list_id);
   if (!list) return res.status(404).json({ error: "Список удалён владельцем" });
@@ -431,13 +431,13 @@ app.post("/api/restore", requireAuth, (req, res) => {
   const insColor = db.prepare(
     "INSERT INTO list_colors (owner, list_id, color) VALUES (?, ?, ?) ON CONFLICT (owner, list_id) DO UPDATE SET color = excluded.color"
   );
-  const insState = db.prepare("INSERT OR REPLACE INTO day_state (owner, day, task_id) VALUES (?, ?, ?)");
+  const insState = db.prepare("INSERT OR REPLACE INTO user_task_state (owner, day, task_id) VALUES (?, ?, ?)");
 
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM lists WHERE owner = ?").run(req.userId);
     db.prepare("DELETE FROM list_colors WHERE owner = ?").run(req.userId);
-    db.prepare("DELETE FROM shares WHERE owner = ?").run(req.userId);
-    db.prepare("DELETE FROM day_state WHERE owner = ?").run(req.userId);
+    db.prepare("DELETE FROM list_shares WHERE owner = ?").run(req.userId);
+    db.prepare("DELETE FROM user_task_state WHERE owner = ?").run(req.userId);
 
     const listIdByKey = {};
     const oldTaskIdMap = {};

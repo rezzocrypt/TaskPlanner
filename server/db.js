@@ -12,38 +12,6 @@ const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
-const legacyColumns = db.prepare("PRAGMA table_info(lists)").all();
-if (legacyColumns.length && legacyColumns.some((c) => c.name === "content")) {
-  db.exec(`
-    DROP TABLE IF EXISTS list_colors;
-    DROP TABLE IF EXISTS day_state;
-    DROP TABLE IF EXISTS shares;
-    DROP TABLE IF EXISTS default_lists;
-    DROP TABLE IF EXISTS lists;
-  `);
-}
-
-const userCols = db.prepare("PRAGMA table_info(users)").all();
-if (userCols.length && userCols.some((c) => c.name === "uid")) {
-  db.exec(`
-    DROP TABLE IF EXISTS users;
-    DROP TABLE IF EXISTS sessions;
-    DROP TABLE IF EXISTS lists;
-    DROP TABLE IF EXISTS tasks;
-    DROP TABLE IF EXISTS task_days;
-    DROP TABLE IF EXISTS list_colors;
-    DROP TABLE IF EXISTS day_state;
-    DROP TABLE IF EXISTS shares;
-    DROP TABLE IF EXISTS user_meta;
-  `);
-}
-
-db.exec(`
-  DROP TABLE IF EXISTS default_template_task_days;
-  DROP TABLE IF EXISTS default_template_tasks;
-  DROP TABLE IF EXISTS default_templates;
-`);
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,14 +44,14 @@ db.exec(`
     PRIMARY KEY (owner, list_id)
   );
 
-  CREATE TABLE IF NOT EXISTS day_state (
+  CREATE TABLE IF NOT EXISTS user_task_state (
     owner   INTEGER NOT NULL,
     day     TEXT NOT NULL,
     task_id INTEGER NOT NULL,
     PRIMARY KEY (owner, day, task_id)
   );
 
-  CREATE TABLE IF NOT EXISTS shares (
+  CREATE TABLE IF NOT EXISTS list_shares (
     token      TEXT PRIMARY KEY,
     owner      INTEGER NOT NULL,
     list_id    INTEGER NOT NULL,
@@ -91,25 +59,29 @@ db.exec(`
     UNIQUE (owner, list_id)
   );
 
-  CREATE TABLE IF NOT EXISTS user_meta (
-    owner   INTEGER PRIMARY KEY,
-    seeded  INTEGER NOT NULL DEFAULT 0
-  );
-
   CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     email      TEXT NOT NULL UNIQUE,
     password   TEXT NOT NULL,
+    seeded     INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
-  CREATE TABLE IF NOT EXISTS sessions (
+  CREATE TABLE IF NOT EXISTS user_sessions (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
   );
 `);
+
+const userTableCols = db.prepare("PRAGMA table_info(users)").all();
+if (userTableCols.length && !userTableCols.some((c) => c.name === "seeded")) {
+  throw new Error(
+    `Таблица users не содержит колонку seeded — это устаревшая схема. ` +
+      `Удалите файл базы данных, чтобы создать новую: ${DB_PATH}`
+  );
+}
 
 export function normalizeTaskList(tasks) {
   return (Array.isArray(tasks) ? tasks : [])
@@ -241,7 +213,7 @@ export function deleteList(owner, id) {
   if (!getList(owner, id)) return false;
   db.transaction(() => {
     db.prepare("DELETE FROM list_colors WHERE owner = ? AND list_id = ?").run(owner, id);
-    db.prepare("DELETE FROM shares WHERE owner = ? AND list_id = ?").run(owner, id);
+    db.prepare("DELETE FROM list_shares WHERE owner = ? AND list_id = ?").run(owner, id);
     db.prepare("DELETE FROM lists WHERE id = ? AND owner = ?").run(id, owner);
   })();
   return true;
@@ -255,7 +227,7 @@ export function ownerOfTask(taskId) {
 }
 
 export function readNestedState(owner) {
-  const rows = db.prepare("SELECT day, task_id FROM day_state WHERE owner = ?").all(owner);
+  const rows = db.prepare("SELECT day, task_id FROM user_task_state WHERE owner = ?").all(owner);
   const out = {};
   for (const row of rows) {
     if (!out[row.day]) out[row.day] = {};
@@ -267,9 +239,9 @@ export function readNestedState(owner) {
 export const ALLOWED_DAY_RE = /^\d{4}-\d{1,2}-\d{1,2}$/;
 
 export function replaceNestedState(owner, state, ownedTaskIds) {
-  const del = db.prepare("DELETE FROM day_state WHERE owner = ?");
+  const del = db.prepare("DELETE FROM user_task_state WHERE owner = ?");
   const ins = db.prepare(
-    "INSERT OR REPLACE INTO day_state (owner, day, task_id) VALUES (?, ?, ?)"
+    "INSERT OR REPLACE INTO user_task_state (owner, day, task_id) VALUES (?, ?, ?)"
   );
   const tx = db.transaction(() => {
     del.run(owner);
@@ -296,8 +268,8 @@ export function getOwnedTaskIds(owner) {
 }
 
 export function seedUserDefaults(ownerId) {
-  const meta = db.prepare("SELECT seeded FROM user_meta WHERE owner = ?").get(ownerId);
-  if (meta && meta.seeded) return false;
+  const row = db.prepare("SELECT seeded FROM users WHERE id = ?").get(ownerId);
+  if (row && row.seeded) return false;
   const seedPath = path.join(__dirname, "seed", "default-lists.json");
   let data;
   try {
@@ -307,9 +279,7 @@ export function seedUserDefaults(ownerId) {
   }
   const items = Array.isArray(data.defaultLists) ? data.defaultLists : [];
   if (!items.length) return false;
-  db.prepare(
-    "INSERT INTO user_meta (owner, seeded) VALUES (?, 1) ON CONFLICT (owner) DO UPDATE SET seeded = 1"
-  ).run(ownerId);
+  db.prepare("UPDATE users SET seeded = 1 WHERE id = ?").run(ownerId);
   const tx = db.transaction(() => {
     for (const item of items) {
       if (!item || !item.name) continue;
