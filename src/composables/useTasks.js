@@ -56,48 +56,41 @@ function colorIndex(id) {
   return pos < 0 ? 0 : pos;
 }
 
-function checkedAt(dayKey, listId, text) {
+function taskId(task) {
+  return task && typeof task === "object" ? task.id : null;
+}
+
+function checkedAt(dayKey, listId, task) {
+  const id = taskId(task);
+  if (id == null) return false;
   const item = lists.value.find((l) => l.id === listId);
   if (item && item.shareRef) {
-    const os = item.shareRef.uid === uid ? state : ownerStates[item.shareRef.uid];
-    return !!(os && os[dayKey] && os[dayKey][item.shareRef.file] && os[dayKey][item.shareRef.file][text]);
+    const os = item.shareRef.ownerId === uid ? state : ownerStates[item.shareRef.ownerId];
+    return !!(os && os[dayKey] && os[dayKey][id]);
   }
-  return !!(state[dayKey] && state[dayKey][listId] && state[dayKey][listId][text]);
+  return !!(state[dayKey] && state[dayKey][id]);
 }
 
-function isDone(dateKey, listId, text) {
-  return !!(state[dateKey] && state[dateKey][listId] && state[dateKey][listId][text]);
+function isDone(dateKey, task) {
+  const id = taskId(task);
+  if (id == null) return false;
+  return !!(state[dateKey] && state[dateKey][id]);
 }
 
-function writeFileFor(id) {
-  const item = lists.value.find((l) => l.id === id);
-  if (item && item.shareRef && item.shareRef.uid === uid) return item.shareRef.file;
-  return id;
-}
-
-async function toggle(dateKey, listId, taskText, checked) {
-  const file = writeFileFor(listId);
+async function toggle(dateKey, listId, task, checked) {
+  const id = taskId(task);
+  if (id == null) return;
   if (!state[dateKey]) state[dateKey] = {};
-  if (!state[dateKey][file]) state[dateKey][file] = {};
-  state[dateKey][file][taskText] = checked;
+  if (checked) state[dateKey][id] = true;
+  else delete state[dateKey][id];
   try {
     await api("/state/toggle", {
       method: "POST",
-      body: { day: dateKey, file, task: taskText, done: checked }
+      body: { day: dateKey, taskId: id, done: checked }
     });
   } catch (e) {
     console.error("toggle save failed", e);
   }
-}
-
-function doneCount(listId, dateKey, tasks) {
-  const map = state[dateKey] && state[dateKey][listId] ? state[dateKey][listId] : {};
-  let done = 0;
-  tasks.forEach((t) => {
-    const txt = typeof t === "string" ? t : String(t.text || "");
-    if (map[txt]) done++;
-  });
-  return done;
 }
 
 async function loadState() {
@@ -117,13 +110,11 @@ async function loadAllMetas() {
       try {
         const meta = await api("/lists/" + encodeURIComponent(item.id));
         metas[item.id] = {
-          id: item.id,
-          label: meta.label,
-          tasks: meta.tasks,
-          raw: meta.raw,
-          color: meta.color || ""
+          id: meta.id,
+          label: meta.name,
+          tasks: meta.tasks
         };
-        item.label = meta.label;
+        item.label = meta.name;
         if (meta.color) colors[item.id] = meta.color;
         else delete colors[item.id];
       } catch (e) {
@@ -189,7 +180,7 @@ async function resetColor(id) {
 async function shareList(id) {
   const item = lists.value.find((l) => l.id === id);
   if (!item || item.readonly) throw new Error("Список не найден");
-  const data = await api("/shares", { method: "POST", body: { file: id } });
+  const data = await api("/shares", { method: "POST", body: { listId: id } });
   shares[id] = data.token;
   const url = location.origin + location.pathname + "?share=" + data.token;
   return { url, token: data.token };
@@ -229,13 +220,13 @@ async function attachShared(token) {
     persistAttached();
     return;
   }
-  metas[id] = { id, label: meta.label, tasks: meta.tasks, raw: meta.raw };
-  const item = { id, label: meta.label, readonly: true, shareRef: { uid: meta.owner, file: meta.file } };
+  metas[id] = { id, label: meta.name, tasks: meta.tasks };
+  const item = { id, label: meta.name, readonly: true, shareRef: { ownerId: String(meta.owner) } };
   if (meta.color) shareColors[id] = meta.color;
   else delete shareColors[id];
   lists.value = [item, ...lists.value];
   selectedIds.value = [...new Set([id, ...selectedIds.value])];
-  if (item.shareRef.uid && item.shareRef.uid !== uid) await loadOwnerState(item.shareRef.uid);
+  if (item.shareRef.ownerId && item.shareRef.ownerId !== uid) await loadOwnerState(item.shareRef.ownerId);
 }
 
 function detachShared(item, token) {
@@ -253,12 +244,12 @@ function unsubscribe(id) {
   detachShared(item, tokenFromId(id));
 }
 
-async function loadOwnerState(ownerUid) {
-  if (!ownerUid || ownerUid === uid) return;
+async function loadOwnerState(ownerId) {
+  if (!ownerId || ownerId === uid) return;
   try {
-    const data = await api("/users/" + encodeURIComponent(ownerUid) + "/state");
+    const data = await api("/users/" + encodeURIComponent(ownerId) + "/state");
     if (data && data.state && typeof data.state === "object") {
-      ownerStates[ownerUid] = data.state;
+      ownerStates[ownerId] = data.state;
     }
   } catch (e) {}
 }
@@ -284,43 +275,36 @@ async function refreshSharedLists() {
       detachShared(item, token);
       continue;
     }
-    metas[item.id] = { id: item.id, label: meta.label, tasks: meta.tasks, raw: meta.raw };
-    item.label = meta.label;
-    item.shareRef = { uid: meta.owner, file: meta.file };
+    metas[item.id] = { id: item.id, label: meta.name, tasks: meta.tasks };
+    item.label = meta.name;
+    item.shareRef = { ownerId: String(meta.owner) };
     if (meta.color) shareColors[item.id] = meta.color;
     else delete shareColors[item.id];
-    if (item.shareRef.uid && item.shareRef.uid !== uid && !fetchedOwners.has(item.shareRef.uid)) {
-      fetchedOwners.add(item.shareRef.uid);
-      await loadOwnerState(item.shareRef.uid);
+    if (item.shareRef.ownerId && item.shareRef.ownerId !== uid && !fetchedOwners.has(item.shareRef.ownerId)) {
+      fetchedOwners.add(item.shareRef.ownerId);
+      await loadOwnerState(item.shareRef.ownerId);
     }
   }
 }
 
-async function saveList(id, content) {
+async function saveList(id, data) {
   const meta = await api("/lists/" + encodeURIComponent(id), {
     method: "PUT",
-    body: { content }
+    body: data
   });
-  metas[id] = { id: meta.id, label: meta.label, tasks: meta.tasks, raw: meta.raw };
+  metas[id] = { id: meta.id, label: meta.name, tasks: meta.tasks };
   const item = lists.value.find((l) => l.id === id);
-  if (item) item.label = meta.label;
+  if (item) item.label = meta.name;
 }
 
-async function addList(fileName, content) {
-  const name = String(fileName).trim();
-  if (!/^[\p{L}\p{N}._\-\s]+\.json$/iu.test(name)) {
-    throw new Error("Имя файла должно быть в виде название.json (буквы, цифры, пробелы, точка, дефис)");
-  }
-  if (lists.value.some((l) => l.id.toLowerCase() === name.toLowerCase())) {
-    throw new Error("Список с таким именем уже существует");
-  }
-  const meta = await api("/lists", { method: "POST", body: { file: name, content } });
-  metas[name] = { id: name, label: meta.label, tasks: meta.tasks, raw: meta.raw };
+async function addList(data) {
+  const meta = await api("/lists", { method: "POST", body: data });
+  metas[meta.id] = { id: meta.id, label: meta.name, tasks: meta.tasks };
   const shared = lists.value.filter((l) => l.readonly);
   const own = lists.value.filter((l) => !l.readonly);
-  own.push({ id: name, label: meta.label, readonly: false });
+  own.push({ id: meta.id, label: meta.name, readonly: false });
   lists.value = [...shared, ...own];
-  selectedIds.value = [...new Set([...selectedIds.value, name])];
+  selectedIds.value = [...new Set([...selectedIds.value, meta.id])];
 }
 
 async function deleteList(id) {
@@ -336,12 +320,22 @@ async function deleteList(id) {
 function buildBackup() {
   return {
     app: "weekplan",
-    version: 1,
+    version: 2,
     createdAt: new Date().toISOString(),
-    lists: lists.value.filter((l) => !l.readonly).map((l) => ({
-      file: l.id,
-      content: metas[l.id] ? metas[l.id].raw : ""
-    })),
+    lists: lists.value.filter((l) => !l.readonly).map((l) => {
+      const meta = metas[l.id];
+      return {
+        id: l.id,
+        name: meta ? meta.label : "",
+        tasks: (meta ? meta.tasks : []).map((t) => ({
+          id: t.id,
+          text: t.text,
+          start: t.start || "",
+          end: t.end || "",
+          days: Array.isArray(t.days) ? t.days.slice() : []
+        }))
+      };
+    }),
     dayState: JSON.parse(JSON.stringify(state)),
     colors: JSON.parse(JSON.stringify(colors))
   };
@@ -413,7 +407,6 @@ export function useTasks() {
     isSelected,
     isDone,
     toggle,
-    doneCount,
     prevWeek,
     nextWeek,
     goToday

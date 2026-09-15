@@ -7,22 +7,32 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import db, { listMeta, seedDefaultsIfEmpty, seedUserDefaults } from "./db.js";
+import db, {
+  getList,
+  readList,
+  createList,
+  updateList,
+  deleteList,
+  ownerOfTask,
+  readNestedState,
+  replaceNestedState,
+  getOwnedTaskIds,
+  seedDefaultsIfEmpty,
+  seedUserDefaults,
+  normalizeTaskList,
+  ALLOWED_DAY_RE
+} from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
 const DIST_DIR = path.join(ROOT, "dist");
 const PORT = process.env.PORT || 3000;
-const UID_RE = /^[a-zA-Z0-9_-]{6,64}$/;
-const FILE_RE = /^[\p{L}\p{N}._\-\s]+\.json$/iu;
 const DAY_RE = /^\d{4}-\d{1,2}-\d{1,2}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SESSION_COOKIE = "weekplan-session";
 const SESSION_DAYS = 30;
-
-function randomUid() {
-  return randomBytes(15).toString("base64url");
-}
+const MAX_NAME = 100;
+const COLOR_RE = /^[a-zA-Z0-9#]{3,32}$/;
 
 function randomToken() {
   return randomBytes(12).toString("base64url");
@@ -30,6 +40,23 @@ function randomToken() {
 
 function sessionToken() {
   return randomBytes(32).toString("base64url");
+}
+
+function parseId(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function parseListBody(body) {
+  const name = String((body && body.name) || "").trim().slice(0, MAX_NAME);
+  if (!name) {
+    return { error: "Название списка не может быть пустым" };
+  }
+  const tasks = normalizeTaskList(body && body.tasks);
+  if (tasks.some((t) => t.text.length > 500)) {
+    return { error: "Текст задачи слишком длинный (максимум 500 символов)" };
+  }
+  return { name, tasks };
 }
 
 function hashPassword(password) {
@@ -65,12 +92,12 @@ function clearSessionCookie(res) {
   );
 }
 
-function createSession(uid, res) {
+function createSession(userId, res) {
   const token = sessionToken();
   const now = Date.now();
   const expiresAt = now + SESSION_DAYS * 24 * 60 * 60 * 1000;
-  db.prepare("INSERT INTO sessions (token, uid, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(token, uid, now, expiresAt);
+  db.prepare("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .run(token, userId, now, expiresAt);
   res.append(
     "Set-Cookie",
     SESSION_COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + SESSION_DAYS * 24 * 60 * 60
@@ -87,18 +114,10 @@ function resolveSession(req) {
   const token = cookies[SESSION_COOKIE];
   if (!token) return null;
   const row = db.prepare(
-    "SELECT s.uid, u.email FROM sessions s JOIN users u ON u.uid = s.uid WHERE s.token = ? AND s.expires_at > ?"
+    "SELECT s.user_id, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?"
   ).get(token, Date.now());
   if (!row) return null;
-  return { uid: row.uid, email: row.email };
-}
-
-function uidFromRequest(req) {
-  const session = resolveSession(req);
-  if (session) return session.uid;
-  const cookies = parseCookies(req);
-  const uid = decodeURIComponent(cookies["weekplan-uid"] || "");
-  return UID_RE.test(uid) ? uid : "";
+  return { id: row.user_id, email: row.email };
 }
 
 function requireAuth(req, res, next) {
@@ -106,59 +125,80 @@ function requireAuth(req, res, next) {
   if (!session) {
     return res.status(401).json({ error: "Требуется вход" });
   }
-  req.uid = session.uid;
+  req.userId = session.id;
   req.email = session.email;
   next();
 }
 
-function readNestedState(owner) {
-  const rows = db.prepare("SELECT day, file, task FROM day_state WHERE owner = ?").all(owner);
-  const out = {};
-  for (const row of rows) {
-    if (!out[row.day]) out[row.day] = {};
-    if (!out[row.day][row.file]) out[row.day][row.file] = {};
-    out[row.day][row.file][row.task] = true;
-  }
-  return out;
-}
-
-function replaceNestedState(owner, state) {
-  const del = db.prepare("DELETE FROM day_state WHERE owner = ?");
-  const ins = db.prepare(
-    "INSERT OR REPLACE INTO day_state (owner, day, file, task) VALUES (?, ?, ?, ?)"
-  );
-  const tx = db.transaction(() => {
-    del.run(owner);
-    for (const [day, files] of Object.entries(state)) {
-      if (!DAY_RE.test(day) || !files || typeof files !== "object") continue;
-      for (const [file, tasks] of Object.entries(files)) {
-        if (!FILE_RE.test(file) || !tasks || typeof tasks !== "object") continue;
-        for (const [task, done] of Object.entries(tasks)) {
-          if (task && done) ins.run(owner, day, file, task);
-        }
-      }
-    }
-  });
-  tx();
-}
-
-function getListRow(owner, file) {
-  return db.prepare("SELECT content FROM lists WHERE owner = ? AND file = ?").get(owner, file);
-}
-
-function getBackupPayload(owner) {
-  const listRows = db.prepare("SELECT file, content FROM lists WHERE owner = ? ORDER BY rowid").all(owner);
-  const colorRows = db.prepare("SELECT file, color FROM list_colors WHERE owner = ? AND color != ''").all(owner);
+export function getBackupPayload(owner) {
+  const listRows = db.prepare("SELECT id FROM lists WHERE owner = ? ORDER BY rowid").all(owner);
+  const colorRows = db.prepare("SELECT list_id, color FROM list_colors WHERE owner = ? AND color != ''").all(owner);
   const colors = {};
-  for (const c of colorRows) colors[c.file] = c.color;
+  for (const c of colorRows) colors[String(c.list_id)] = c.color;
   return {
     app: "weekplan",
-    version: 1,
+    version: 2,
     createdAt: new Date().toISOString(),
-    lists: listRows.map((r) => ({ file: r.file, content: r.content })),
+    lists: listRows.map((r) => {
+      const list = readList(owner, r.id);
+      return { id: list.id, name: list.name, tasks: list.tasks };
+    }),
     dayState: readNestedState(owner),
     colors
   };
+}
+
+function parseBackupLists(data) {
+  const rawLists = Array.isArray(data.lists) ? data.lists : [];
+  const isV1 = rawLists.length > 0 && rawLists.some((l) => l && typeof l.file === "string");
+  const lists = [];
+  const v1TaskKey = {};
+  for (const raw of rawLists) {
+    if (!raw || typeof raw !== "object") continue;
+    let name = "";
+    let tasks = [];
+    let key = "";
+    if (isV1) {
+      key = String(raw.file || "").trim();
+      if (!key) continue;
+      let content = {};
+      try {
+        content = JSON.parse(String(raw.content || ""));
+      } catch (e) {
+        content = {};
+      }
+      name = String(content && content.name || "").trim();
+      tasks = normalizeTaskList(content && content.tasks);
+      tasks = tasks.map((t) => ({ ...t, key: String(t.text) }));
+      v1TaskKey[key] = {};
+      for (const t of tasks) {
+        if (!(t.text in v1TaskKey[key])) v1TaskKey[key][t.text] = t.key;
+      }
+    } else {
+      key = String((raw.id ?? "")).trim();
+      try {
+        name = String(raw.name || "").trim();
+      } catch (e) {
+        name = "";
+      }
+      tasks = normalizeTaskList(raw.tasks).map((t) => ({ ...t, key: String(t.id ?? "") }));
+    }
+    if (!name && !tasks.length) continue;
+    lists.push({ key, name, tasks });
+  }
+  return { isV1, lists, v1TaskKey };
+}
+
+function parseBackupColors(data) {
+  const colors = {};
+  const src = data.colors && typeof data.colors === "object" && !Array.isArray(data.colors)
+    ? data.colors
+    : {};
+  for (const [key, value] of Object.entries(src)) {
+    const color = String(value || "").trim();
+    if (color && COLOR_RE.test(color)) colors[String(key)] = color;
+  }
+  return colors;
 }
 
 const app = express();
@@ -166,22 +206,10 @@ app.use(express.json({ limit: "10mb" }));
 
 app.post("/api/me", (req, res) => {
   const session = resolveSession(req);
-  const cookies = parseCookies(req);
-  let anon = decodeURIComponent(cookies["weekplan-uid"] || "");
-  if (!UID_RE.test(anon)) {
-    anon = randomUid();
-    res.append(
-      "Set-Cookie",
-      "weekplan-uid=" + encodeURIComponent(anon) + "; Path=/; Max-Age=31536000; SameSite=Lax"
-    );
-  }
-  const uid = session ? session.uid : anon;
-  seedUserDefaults(uid);
   res.json({
-    uid,
+    id: session ? session.id : null,
     email: session ? session.email : null,
-    anonymous: !session,
-    isNew: !cookies["weekplan-uid"]
+    anonymous: !session
   });
 });
 
@@ -202,28 +230,24 @@ app.post("/api/register", (req, res) => {
   if (existing) {
     return res.status(409).json({ error: "Пользователь с такой почтой уже существует" });
   }
-  const cookies = parseCookies(req);
-  let uid = decodeURIComponent(cookies["weekplan-uid"] || "");
-  if (!UID_RE.test(uid) || db.prepare("SELECT id FROM users WHERE uid = ?").get(uid)) {
-    uid = randomUid();
-  }
-  db.prepare("INSERT INTO users (email, password, uid) VALUES (?, ?, ?)")
-    .run(email, hashPassword(password), uid);
-  createSession(uid, res);
-  seedUserDefaults(uid);
-  res.status(201).json({ uid, email });
+  const result = db.prepare("INSERT INTO users (email, password) VALUES (?, ?)")
+    .run(email, hashPassword(password));
+  const userId = result.lastInsertRowid;
+  createSession(userId, res);
+  seedUserDefaults(userId);
+  res.status(201).json({ id: userId, email });
 });
 
 app.post("/api/login", (req, res) => {
   cleanupSessions();
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
-  const user = db.prepare("SELECT uid, email, password FROM users WHERE email = ?").get(email);
+  const user = db.prepare("SELECT id, email, password FROM users WHERE email = ?").get(email);
   if (!user || !verifyPassword(password, user.password)) {
     return res.status(401).json({ error: "Неверная почта или пароль" });
   }
-  createSession(user.uid, res);
-  res.json({ uid: user.uid, email: user.email });
+  createSession(user.id, res);
+  res.json({ id: user.id, email: user.email });
 });
 
 app.post("/api/logout", (req, res) => {
@@ -237,105 +261,75 @@ app.post("/api/logout", (req, res) => {
 });
 
 app.get("/api/lists", requireAuth, (req, res) => {
-  const seeded = seedUserDefaults(req.uid);
-  const rows = db.prepare("SELECT file FROM lists WHERE owner = ? ORDER BY rowid").all(req.uid);
-  const colorRows = db.prepare("SELECT file, color FROM list_colors WHERE owner = ?").all(req.uid);
-  const shareRows = db.prepare("SELECT file, token FROM shares WHERE owner = ?").all(req.uid);
-  const colorByFile = {};
-  for (const c of colorRows) colorByFile[c.file] = c.color;
-  const tokenByFile = {};
-  for (const s of shareRows) tokenByFile[s.file] = s.token;
-  const lists = [];
-  for (const row of rows) {
-    const meta = listMeta(row.file, getListRow(req.uid, row.file).content);
-    lists.push({
-      id: row.file,
-      label: meta.label,
-      readonly: false,
-      color: colorByFile[row.file] || "",
-      token: tokenByFile[row.file] || ""
-    });
-  }
+  const seeded = seedUserDefaults(req.userId);
+  const rows = db.prepare("SELECT id, name FROM lists WHERE owner = ? ORDER BY rowid").all(req.userId);
+  const colorRows = db.prepare("SELECT list_id, color FROM list_colors WHERE owner = ?").all(req.userId);
+  const shareRows = db.prepare("SELECT list_id, token FROM shares WHERE owner = ?").all(req.userId);
+  const colorByList = {};
+  for (const c of colorRows) colorByList[c.list_id] = c.color;
+  const tokenByList = {};
+  for (const s of shareRows) tokenByList[s.list_id] = s.token;
+  const lists = rows.map((row) => ({
+    id: row.id,
+    label: row.name || "Без названия",
+    readonly: false,
+    color: colorByList[row.id] || "",
+    token: tokenByList[row.id] || ""
+  }));
   res.json({ lists, seeded });
 });
 
-app.get("/api/lists/:file", requireAuth, (req, res) => {
-  const row = getListRow(req.uid, req.params.file);
-  if (!row) return res.status(404).json({ error: "Список не найден" });
-  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND file = ?").get(req.uid, req.params.file);
-  res.json({ ...listMeta(req.params.file, row.content), color: colorRow && colorRow.color ? colorRow.color : "" });
+app.get("/api/lists/:id", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
+  const list = readList(req.userId, id);
+  if (!list) return res.status(404).json({ error: "Список не найден" });
+  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND list_id = ?").get(req.userId, id);
+  res.json({ ...list, color: colorRow && colorRow.color ? colorRow.color : "" });
 });
 
 app.post("/api/lists", requireAuth, (req, res) => {
-  const file = String(req.body.file || "").trim();
-  const content = String(req.body.content || "");
-  if (!FILE_RE.test(file)) {
-    return res.status(400).json({ error: "Имя файла должно быть в виде название.json (буквы, цифры, пробелы, точка, дефис)" });
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(content);
-  } catch (e) {
-    return res.status(400).json({ error: "Содержимое должно быть валидным JSON" });
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return res.status(400).json({ error: "В блоке должен быть JSON-объект с полями name и tasks" });
-  }
-  if (getListRow(req.uid, file)) {
-    return res.status(409).json({ error: "Список с таким именем уже существует" });
-  }
-  db.prepare("INSERT INTO lists (owner, file, content) VALUES (?, ?, ?)").run(req.uid, file, content);
-  res.json({ ...listMeta(file, content), color: "" });
+  const parsed = parseListBody(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const list = createList(req.userId, parsed.name, parsed.tasks);
+  res.status(201).json({ ...list, color: "" });
 });
 
-app.put("/api/lists/:file", requireAuth, (req, res) => {
-  const content = String(req.body.content || "");
-  let parsed;
-  try {
-    parsed = JSON.parse(content);
-  } catch (e) {
-    return res.status(400).json({ error: "Содержимое должно быть валидным JSON" });
-  }
-  if (parsed === null || typeof parsed !== "object") {
-    return res.status(400).json({ error: "Содержимое должно быть JSON-объектом с полями name и tasks" });
-  }
-  const existing = getListRow(req.uid, req.params.file);
-  if (!existing) return res.status(404).json({ error: "Список не найден" });
-  db.prepare("UPDATE lists SET content = ?, updated_at = datetime('now') WHERE owner = ? AND file = ?")
-    .run(content, req.uid, req.params.file);
-  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND file = ?").get(req.uid, req.params.file);
-  res.json({ ...listMeta(req.params.file, content), color: colorRow && colorRow.color ? colorRow.color : "" });
+app.put("/api/lists/:id", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
+  if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
+  const parsed = parseListBody(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const list = updateList(req.userId, id, parsed.name, parsed.tasks);
+  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND list_id = ?").get(req.userId, id);
+  res.json({ ...list, color: colorRow && colorRow.color ? colorRow.color : "" });
 });
 
-app.delete("/api/lists/:file", requireAuth, (req, res) => {
-  const file = req.params.file;
-  if (!getListRow(req.uid, file)) return res.status(404).json({ error: "Список не найден" });
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM lists WHERE owner = ? AND file = ?").run(req.uid, file);
-    db.prepare("DELETE FROM list_colors WHERE owner = ? AND file = ?").run(req.uid, file);
-    db.prepare("DELETE FROM day_state WHERE owner = ? AND file = ?").run(req.uid, file);
-    db.prepare("DELETE FROM shares WHERE owner = ? AND file = ?").run(req.uid, file);
-  });
-  tx();
+app.delete("/api/lists/:id", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
+  if (!deleteList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
   res.json({ ok: true });
 });
 
-app.put("/api/lists/:file/color", requireAuth, (req, res) => {
+app.put("/api/lists/:id/color", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
+  if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
   const color = String(req.body.color || "").trim();
-  const file = req.params.file;
-  if (!getListRow(req.uid, file)) return res.status(404).json({ error: "Список не найден" });
   if (color) {
     db.prepare(
-      "INSERT INTO list_colors (owner, file, color) VALUES (?, ?, ?) ON CONFLICT (owner, file) DO UPDATE SET color = excluded.color"
-    ).run(req.uid, file, color);
+      "INSERT INTO list_colors (owner, list_id, color) VALUES (?, ?, ?) ON CONFLICT (owner, list_id) DO UPDATE SET color = excluded.color"
+    ).run(req.userId, id, color);
   } else {
-    db.prepare("DELETE FROM list_colors WHERE owner = ? AND file = ?").run(req.uid, file);
+    db.prepare("DELETE FROM list_colors WHERE owner = ? AND list_id = ?").run(req.userId, id);
   }
   res.json({ ok: true, color });
 });
 
 app.get("/api/state", requireAuth, (req, res) => {
-  res.json({ state: readNestedState(req.uid) });
+  res.json({ state: readNestedState(req.userId) });
 });
 
 app.put("/api/state", requireAuth, (req, res) => {
@@ -343,46 +337,48 @@ app.put("/api/state", requireAuth, (req, res) => {
   if (!state || typeof state !== "object" || Array.isArray(state)) {
     return res.status(400).json({ error: "Ожидается объект state" });
   }
-  replaceNestedState(req.uid, state);
+  replaceNestedState(req.userId, state, getOwnedTaskIds(req.userId));
   res.json({ ok: true });
 });
 
 app.post("/api/state/toggle", requireAuth, (req, res) => {
-  const { day, file, task, done } = req.body || {};
-  if (!DAY_RE.test(String(day || ""))) {
+  const { day, taskId, done } = req.body || {};
+  if (!ALLOWED_DAY_RE.test(String(day || ""))) {
     return res.status(400).json({ error: "Недопустимая дата" });
   }
-  if (!FILE_RE.test(String(file || ""))) {
-    return res.status(400).json({ error: "Недопустимое имя файла" });
+  const id = parseId(taskId);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор задачи" });
+  if (ownerOfTask(id) !== req.userId) {
+    return res.status(404).json({ error: "Задача не найдена" });
   }
-  const txt = String(task || "");
-  if (!txt) return res.status(400).json({ error: "Задача не может быть пустой" });
   if (done) {
-    db.prepare("INSERT OR REPLACE INTO day_state (owner, day, file, task) VALUES (?, ?, ?, ?)")
-      .run(req.uid, day, file, txt);
+    db.prepare("INSERT OR REPLACE INTO day_state (owner, day, task_id) VALUES (?, ?, ?)")
+      .run(req.userId, String(day), id);
   } else {
-    db.prepare("DELETE FROM day_state WHERE owner = ? AND day = ? AND file = ? AND task = ?")
-      .run(req.uid, day, file, txt);
+    db.prepare("DELETE FROM day_state WHERE owner = ? AND day = ? AND task_id = ?")
+      .run(req.userId, String(day), id);
   }
   res.json({ ok: true });
 });
 
 app.post("/api/shares", requireAuth, (req, res) => {
-  const file = String(req.body.file || "").trim();
-  if (!FILE_RE.test(file)) return res.status(400).json({ error: "Недопустимое имя файла" });
-  if (!getListRow(req.uid, file)) return res.status(404).json({ error: "Список не найден" });
-  let token = db.prepare("SELECT token FROM shares WHERE owner = ? AND file = ?").get(req.uid, file);
+  const id = parseId(req.body && req.body.listId);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
+  if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
+  let token = db.prepare("SELECT token FROM shares WHERE owner = ? AND list_id = ?").get(req.userId, id);
   if (!token) {
     token = randomToken();
-    db.prepare("INSERT INTO shares (token, owner, file) VALUES (?, ?, ?)").run(token, req.uid, file);
+    db.prepare("INSERT INTO shares (token, owner, list_id) VALUES (?, ?, ?)").run(token, req.userId, id);
   } else {
     token = token.token;
   }
-  res.json({ token, file });
+  res.json({ token, listId: id });
 });
 
-app.delete("/api/shares/:file", requireAuth, (req, res) => {
-  db.prepare("DELETE FROM shares WHERE owner = ? AND file = ?").run(req.uid, req.params.file);
+app.delete("/api/shares/:id", requireAuth, (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
+  db.prepare("DELETE FROM shares WHERE owner = ? AND list_id = ?").run(req.userId, id);
   res.json({ ok: true });
 });
 
@@ -391,28 +387,30 @@ app.get("/api/shares/:token", (req, res) => {
   if (!token) return res.status(400).json({ error: "Недопустимый токен" });
   const share = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!share) return res.status(404).json({ error: "Средний список не найден" });
-  const row = getListRow(share.owner, share.file);
-  if (!row) return res.status(404).json({ error: "Список удалён владельцем" });
-  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND file = ?").get(share.owner, share.file);
-  const meta = listMeta(share.file, row.content);
+  const list = readList(share.owner, share.list_id);
+  if (!list) return res.status(404).json({ error: "Список удалён владельцем" });
+  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND list_id = ?").get(share.owner, share.list_id);
   res.json({
-    ...meta,
+    ...list,
     owner: share.owner,
-    file: share.file,
     color: colorRow && colorRow.color ? colorRow.color : ""
   });
 });
 
-app.get("/api/users/:uid/state", (req, res) => {
-  const uid = String(req.params.uid || "").replace(/[^a-zA-Z0-9_-]/g, "");
-  if (!UID_RE.test(uid)) {
+app.get("/api/users/:id/state", (req, res) => {
+  const id = parseId(req.params.id);
+  if (!id) {
     return res.status(400).json({ error: "Недопустимый идентификатор пользователя" });
   }
-  res.json({ state: readNestedState(uid) });
+  const user = db.prepare("SELECT id FROM users WHERE id = ?").get(id);
+  if (!user) {
+    return res.status(404).json({ error: "Пользователь не найден" });
+  }
+  res.json({ state: readNestedState(id) });
 });
 
 app.get("/api/backup", requireAuth, (req, res) => {
-  res.json(getBackupPayload(req.uid));
+  res.json(getBackupPayload(req.userId));
 });
 
 app.post("/api/restore", requireAuth, (req, res) => {
@@ -420,52 +418,75 @@ app.post("/api/restore", requireAuth, (req, res) => {
   if (!data || typeof data !== "object") {
     return res.status(400).json({ error: "Файл бэкапа повреждён или не распознан" });
   }
-  if (!Array.isArray(data.lists)) {
-    return res.status(400).json({ error: "В бэкапе нет поля lists со списками" });
+  const { isV1, lists, v1TaskKey } = parseBackupLists(data);
+  if (!lists.length) {
+    return res.status(400).json({ error: "В бэкапе нет списков" });
   }
-  const seen = new Set();
-  const files = [];
-  for (const l of data.lists) {
-    const base = String((l && l.file) || "").split("/").pop();
-    const content = String((l && l.content) || "");
-    if (!FILE_RE.test(base)) {
-      return res.status(400).json({ error: "Недопустимое имя файла в бэкапе: " + base });
-    }
-    if (seen.has(base)) continue;
-    seen.add(base);
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return res.status(400).json({ error: "Файл " + base + " должен содержать JSON-объект" });
-      }
-    } catch (e) {
-      return res.status(400).json({ error: "Файл " + base + " содержит невалидный JSON: " + e.message });
-    }
-    files.push({ file: base, content });
-  }
+  const colors = parseBackupColors(data);
 
-  const dayState =
-    data.dayState && typeof data.dayState === "object" && !Array.isArray(data.dayState)
-      ? data.dayState
-      : {};
-  const colors =
-    data.colors && typeof data.colors === "object" && !Array.isArray(data.colors) ? data.colors : {};
+  const insertList = db.prepare("INSERT INTO lists (owner, name) VALUES (?, ?)");
+  const insertTask = db.prepare(
+    "INSERT INTO tasks (list_id, position, text, start_time, end_time) VALUES (?, ?, ?, ?, ?)"
+  );
+  const insertDay = db.prepare("INSERT OR IGNORE INTO task_days (task_id, day) VALUES (?, ?)");
+  const insColor = db.prepare(
+    "INSERT INTO list_colors (owner, list_id, color) VALUES (?, ?, ?) ON CONFLICT (owner, list_id) DO UPDATE SET color = excluded.color"
+  );
+  const insState = db.prepare("INSERT OR REPLACE INTO day_state (owner, day, task_id) VALUES (?, ?, ?)");
 
   const tx = db.transaction(() => {
-    db.prepare("DELETE FROM lists WHERE owner = ?").run(req.uid);
-    db.prepare("DELETE FROM list_colors WHERE owner = ?").run(req.uid);
-    const ins = db.prepare("INSERT INTO lists (owner, file, content) VALUES (?, ?, ?)");
-    for (const f of files) ins.run(req.uid, f.file, f.content);
-    const insColor = db.prepare(
-      "INSERT INTO list_colors (owner, file, color) VALUES (?, ?, ?) ON CONFLICT (owner, file) DO UPDATE SET color = excluded.color"
-    );
-    for (const [file, color] of Object.entries(colors)) {
-      if (color && file) insColor.run(req.uid, file, String(color));
+    db.prepare("DELETE FROM lists WHERE owner = ?").run(req.userId);
+    db.prepare("DELETE FROM list_colors WHERE owner = ?").run(req.userId);
+    db.prepare("DELETE FROM shares WHERE owner = ?").run(req.userId);
+    db.prepare("DELETE FROM day_state WHERE owner = ?").run(req.userId);
+
+    const listIdByKey = {};
+    const oldTaskIdMap = {};
+    for (const l of lists) {
+      const listId = insertList.run(req.userId, l.name).lastInsertRowid;
+      if (l.key) listIdByKey[l.key] = listId;
+      l.tasks.forEach((t, pos) => {
+        const taskId = insertTask.run(listId, pos, t.text, t.start, t.end).lastInsertRowid;
+        for (const d of t.days) insertDay.run(taskId, d);
+        if (!isV1 && t.key) oldTaskIdMap[t.key] = taskId;
+        if (isV1 && t.key) v1TaskKey[l.key][t.text] = taskId;
+      });
     }
-    replaceNestedState(req.uid, dayState);
+
+    for (const [key, color] of Object.entries(colors)) {
+      const listId = listIdByKey[key];
+      if (listId) insColor.run(req.userId, listId, color);
+    }
+
+    const dayState =
+      data.dayState && typeof data.dayState === "object" && !Array.isArray(data.dayState)
+        ? data.dayState
+        : {};
+    if (isV1) {
+      for (const [day, files] of Object.entries(dayState)) {
+        if (!DAY_RE.test(day) || !files || typeof files !== "object") continue;
+        for (const [file, tasks] of Object.entries(files)) {
+          if (!tasks || typeof tasks !== "object") continue;
+          for (const [text, done] of Object.entries(tasks)) {
+            if (!done) continue;
+            const tid = v1TaskKey[file] && v1TaskKey[file][text];
+            if (tid) insState.run(req.userId, day, tid);
+          }
+        }
+      }
+    } else {
+      for (const [day, tasks] of Object.entries(dayState)) {
+        if (!DAY_RE.test(day) || !tasks || typeof tasks !== "object") continue;
+        for (const [taskId, done] of Object.entries(tasks)) {
+          if (!done) continue;
+          const tid = oldTaskIdMap[String(taskId)];
+          if (tid) insState.run(req.userId, day, tid);
+        }
+      }
+    }
   });
   tx();
-  res.json({ ok: true, lists: files.map((f) => f.file) });
+  res.json({ ok: true, lists: lists.length });
 });
 
 seedDefaultsIfEmpty();

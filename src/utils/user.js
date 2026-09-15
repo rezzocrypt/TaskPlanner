@@ -3,7 +3,7 @@ import { api } from "./api";
 let meCache = null;
 
 function setMe(data) {
-  meCache = data ? { uid: data.uid, email: data.email || null } : null;
+  meCache = data ? { id: data.id != null ? Number(data.id) : null, email: data.email || null } : null;
 }
 
 export async function getMe() {
@@ -14,7 +14,7 @@ export async function getMe() {
 }
 
 export async function getUid() {
-  return (await getMe()).uid;
+  return String((await getMe()).id || "");
 }
 
 export async function register(email, password) {

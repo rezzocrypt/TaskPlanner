@@ -7,20 +7,20 @@ export function useAuth() {
   async function load() {
     if (!user.value) {
       const me = await getMe();
-      user.value = { uid: me.uid, email: me.email };
+      user.value = { id: me.id, email: me.email };
     }
     return user.value;
   }
 
   async function register(email, password) {
     const me = await apiRegister(email, password);
-    user.value = { uid: me.uid, email: me.email };
+    user.value = { id: me.id, email: me.email };
     return user.value;
   }
 
   async function login(email, password) {
     const me = await apiLogin(email, password);
-    user.value = { uid: me.uid, email: me.email };
+    user.value = { id: me.id, email: me.email };
     return user.value;
   }
 

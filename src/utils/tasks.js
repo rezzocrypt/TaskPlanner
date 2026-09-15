@@ -32,7 +32,7 @@ export function taskDays(t) {
 
 export function taskOnDay(t, dayIndex) {
   const days = taskDays(t);
-  if (!days) return true;
+  if (!days || days.length === 0) return true;
   return days.includes(dayIndex);
 }
 

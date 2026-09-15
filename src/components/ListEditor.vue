@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { DAY_NAMES } from "../utils/date";
 
 const props = defineProps({
-  initial: { type: String, default: "" }
+  initial: { type: [String, Object], default: "" }
 });
 
 const DAY_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
@@ -25,9 +25,10 @@ function dayArray(days) {
 }
 
 function parseTask(t) {
-  if (typeof t === "string") return { text: t, start: "", end: "", days: allDays() };
+  if (typeof t === "string") return { id: null, text: t, start: "", end: "", days: allDays() };
   const o = t && typeof t === "object" ? t : {};
   return {
+    id: Number.isInteger(Number(o.id)) ? Number(o.id) : null,
     text: String(o.text || ""),
     start: String(o.start || ""),
     end: String(o.end || ""),
@@ -35,30 +36,33 @@ function parseTask(t) {
   };
 }
 
-const name = ref("");
-const tasks = ref([]);
-
-function parseInitial() {
-  let parsed = {};
-  try {
-    parsed = JSON.parse(props.initial || "{}");
-  } catch (e) {}
+function parseInitialData() {
+  let parsed = props.initial;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed || "{}");
+    } catch (e) {
+      parsed = {};
+    }
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return {
+      name: String(parsed.name || ""),
+      tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map(parseTask)
+    };
+  }
   if (Array.isArray(parsed)) {
-    name.value = "";
-    tasks.value = parsed.map(parseTask);
-    return;
+    return { name: "", tasks: parsed.map(parseTask) };
   }
-  if (parsed && typeof parsed === "object") {
-    name.value = typeof parsed.name === "string" ? parsed.name : "";
-    const src = Array.isArray(parsed.tasks) ? parsed.tasks : [];
-    tasks.value = src.map(parseTask);
-  }
+  return { name: "", tasks: [] };
 }
 
-parseInitial();
+const initialData = parseInitialData();
+const name = ref(initialData.name);
+const tasks = ref(initialData.tasks);
 
 function addTask() {
-  tasks.value.push({ text: "", start: "", end: "", days: allDays() });
+  tasks.value.push({ id: null, text: "", start: "", end: "", days: allDays() });
 }
 
 function removeTask(i) {
@@ -81,16 +85,15 @@ function serializeRow(row) {
   const text = row.text.trim();
   const days = dayIdxs(row);
   const partial = days.length > 0 && days.length < 7;
-  const hasMeta = row.start || row.end || partial;
-  if (!hasMeta) return text;
   const task = { text };
+  if (row.id != null) task.id = row.id;
   if (row.start) task.start = row.start;
   if (row.end) task.end = row.end;
   if (partial) task.days = days;
   return task;
 }
 
-function getContent() {
+function getData() {
   const out = [];
   let empty = false;
   for (const row of tasks.value) {
@@ -103,13 +106,10 @@ function getContent() {
   if (empty) {
     throw new Error("Есть задача без названия: впишите текст или удалите строку.");
   }
-  const payload = { tasks: out };
-  const trimmed = name.value.trim();
-  if (trimmed) payload.name = trimmed;
-  return JSON.stringify(payload, null, 2);
+  return { name: name.value.trim(), tasks: out };
 }
 
-defineExpose({ getContent, name, tasks, addTask, removeTask });
+defineExpose({ getData, name, tasks, addTask, removeTask });
 </script>
 
 <template>

@@ -37,7 +37,7 @@ const rows = computed(() => {
       const applicable = days.filter(
         (k) => taskOnDay(task, dayIndexFromKey(k))
       );
-      const done = applicable.filter((k) => checkedAt(k, list.id, txt)).length;
+      const done = applicable.filter((k) => checkedAt(k, list.id, task)).length;
       out.push({ txt: list.label + " · " + txt, done, total: applicable.length });
     });
   });

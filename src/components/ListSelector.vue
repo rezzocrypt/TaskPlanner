@@ -6,7 +6,7 @@ const emit = defineEmits(["edit", "add", "share"]);
 const { lists, isSelected, toggleList, deleteList, unsubscribe, colors, setColor, resetColor, effectiveColor } = useTasks();
 
 function remove(id, label) {
-  if (confirm(`Удалить список «${label}»? Файл будет стёрт безвозвратно.`)) {
+  if (confirm(`Удалить список «${label}»? Задачи будут стёрты безвозвратно.`)) {
     deleteList(id);
   }
 }
@@ -33,7 +33,7 @@ function unsub(item) {
           :checked="isSelected(item.id)"
           @change="toggleList(item.id)"
         />
-        {{ item.label.replace(/\.json$/i, "") }}
+        {{ item.label }}
         <span v-if="item.readonly" class="shared-badge">общий</span>
       </label>
       <button v-if="item.readonly" class="btn-edit btn-del" title="Отписаться от общего списка" @click="unsub(item)">

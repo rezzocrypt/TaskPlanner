@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useTasks } from "../composables/useTasks";
 import { dateKey, sameDay, shortDate, DAY_NAMES } from "../utils/date";
-import { taskText, taskOnDay, startMinutes } from "../utils/tasks";
+import { taskOnDay, startMinutes } from "../utils/tasks";
 import TaskItem from "./TaskItem.vue";
 
 const props = defineProps({
@@ -37,7 +37,7 @@ const flatTasks = computed(() => {
 const totalDone = computed(() => {
   let done = 0;
   flatTasks.value.forEach(({ task, listId }) => {
-    if (checkedAt(dayKey.value, listId, taskText(task))) {
+    if (checkedAt(dayKey.value, listId, task)) {
       done++;
     }
   });
@@ -52,7 +52,7 @@ const percent = computed(() =>
 
 function onToggle(item, checked) {
   if (item.readonly) return;
-  toggle(dayKey.value, item.listId, taskText(item.task), checked);
+  toggle(dayKey.value, item.listId, item.task, checked);
 }
 </script>
 
@@ -84,7 +84,7 @@ function onToggle(item, checked) {
           :task="item.task"
           :color="item.color"
           :disabled="item.readonly"
-          :checked="checkedAt(dayKey, item.listId, taskText(item.task))"
+          :checked="checkedAt(dayKey, item.listId, item.task)"
           @toggle="(val) => onToggle(item, val)"
         />
       </ul>

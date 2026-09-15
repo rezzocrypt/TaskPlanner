@@ -12,20 +12,26 @@ const { metas, saveList } = useTasks();
 const editor = ref(null);
 const error = ref("");
 
-const initialContent = computed(() =>
-  metas[props.listId] ? metas[props.listId].raw : ""
-);
+const initialData = computed(() => {
+  const m = metas[props.listId];
+  return m ? { name: m.label, tasks: m.tasks } : { name: "", tasks: [] };
+});
+
+const title = computed(() => {
+  const m = metas[props.listId];
+  return m ? m.label : props.listId;
+});
 
 async function save() {
-  let content;
+  let data;
   try {
-    content = editor.value.getContent();
+    data = editor.value.getData();
   } catch (e) {
     error.value = "Ошибка: " + e.message;
     return;
   }
   try {
-    await saveList(props.listId, content);
+    await saveList(props.listId, data);
     emit("close");
   } catch (e) {
     error.value = "Ошибка сохранения: " + e.message;
@@ -37,17 +43,17 @@ async function save() {
   <div class="overlay" @click.self="emit('close')">
     <div class="modal modal-edit">
       <div class="modal-head">
-        <span class="modal-title">Редактирование: {{ listId }}</span>
+        <span class="modal-title">Редактирование: {{ title }}</span>
         <button @click="emit('close')" title="Закрыть">✕</button>
       </div>
 
       <div class="editor-body">
-        <ListEditor :key="listId" ref="editor" :initial="initialContent" />
+        <ListEditor :key="listId" ref="editor" :initial="initialData" />
         <div v-if="error" class="editor-error">{{ error }}</div>
       </div>
 
       <div class="modal-actions editor-footer">
-        <span class="editor-hint">Задача без времени — простая строка; время и выбранные дни показываются в сетке недели.</span>
+        <span class="editor-hint">Время и выбранные дни показываются в сетке недели; без выбора дней задача показывается каждый день.</span>
         <div class="editor-btns">
           <button class="btn-primary" @click="save">Сохранить</button>
           <button @click="emit('close')">Отмена</button>
