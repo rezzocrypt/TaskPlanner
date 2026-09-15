@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    container_name: weekplan
+    ports:
+      - "3000:3000"
+    environment:
+      WEEKPLAN_DB: /app/data/weekplan.db
+    volumes:
+      - weekplan-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  weekplan-data:

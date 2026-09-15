@@ -39,6 +39,23 @@ npm start
 
 Сервер по умолчанию поднимается на `http://localhost:3000` (порт задаётся переменной окружения `PORT`). Путь к файлу БД можно переопределить через `WEEKPLAN_DB` — это используют тесты.
 
+### Docker
+
+Сборка и запуск одним контейнером (Node 24, production-стадия: собранный фронтенд + сервер):
+
+```bash
+docker compose up -d --build
+```
+
+Откройте `http://localhost:3000`. База данных сохраняется в Docker-томе (`weekplan-data`), поэтому пересоздание контейнера данные не теряет.
+
+Без compose:
+
+```bash
+docker build -t weekplan .
+docker run -d --name weekplan -p 3000:3000 -v weekplan-data:/app/data weekplan
+```
+
 ## Как это работает
 
 Сервер отдаёт REST API (`/api/*`) и хранит данные в SQLite-базе `data/weekplan.db` (каталог `data/` добавлен в `.gitignore`).
