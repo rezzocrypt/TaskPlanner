@@ -1,17 +1,20 @@
 <script setup>
 import { ref } from "vue";
 import { useTasks } from "../composables/useTasks";
+import ListEditor from "./ListEditor.vue";
 
 const emit = defineEmits(["close"]);
 
 const { addList } = useTasks();
-const content = ref(JSON.stringify({
+const editor = ref(null);
+const error = ref("");
+
+const initialContent = JSON.stringify({
   name: "Список дел",
   tasks: [
     { text: "Первое дело", start: "09:00", end: "10:00" }
   ]
-}, null, 2));
-const error = ref("");
+}, null, 2);
 
 function randomListName() {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -25,8 +28,15 @@ function randomListName() {
 }
 
 async function create() {
+  let content;
   try {
-    await addList(randomListName(), content.value);
+    content = editor.value.getContent();
+  } catch (e) {
+    error.value = e.message;
+    return;
+  }
+  try {
+    await addList(randomListName(), content);
     emit("close");
   } catch (e) {
     error.value = e.message;
@@ -43,13 +53,12 @@ async function create() {
       </div>
 
       <div class="editor-body">
-        <label class="field-label" for="new-list-json">Содержимое (JSON)</label>
-        <textarea id="new-list-json" v-model="content" spellcheck="false"></textarea>
+        <ListEditor ref="editor" :initial="initialContent" />
         <div v-if="error" class="editor-error">{{ error }}</div>
       </div>
 
       <div class="modal-actions editor-footer">
-        <span class="editor-hint">days: 0=пн … 6=вс, без days — каждый день</span>
+        <span class="editor-hint">Задача без времени — простая строка; время и выбранные дни показываются в сетке недели.</span>
         <div class="editor-btns">
           <button class="btn-primary" @click="create">Создать</button>
           <button @click="emit('close')">Отмена</button>

@@ -1,6 +1,7 @@
 <script setup>
-import { ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useTasks } from "../composables/useTasks";
+import ListEditor from "./ListEditor.vue";
 
 const props = defineProps({
   listId: { type: String, required: true }
@@ -8,21 +9,23 @@ const props = defineProps({
 const emit = defineEmits(["close"]);
 
 const { metas, saveList } = useTasks();
-const content = ref("");
+const editor = ref(null);
 const error = ref("");
 
-watch(
-  () => props.listId,
-  (id) => {
-    content.value = metas[id] ? metas[id].raw : "";
-    error.value = "";
-  },
-  { immediate: true }
+const initialContent = computed(() =>
+  metas[props.listId] ? metas[props.listId].raw : ""
 );
 
 async function save() {
+  let content;
   try {
-    await saveList(props.listId, content.value);
+    content = editor.value.getContent();
+  } catch (e) {
+    error.value = "Ошибка: " + e.message;
+    return;
+  }
+  try {
+    await saveList(props.listId, content);
     emit("close");
   } catch (e) {
     error.value = "Ошибка сохранения: " + e.message;
@@ -39,12 +42,12 @@ async function save() {
       </div>
 
       <div class="editor-body">
-        <textarea v-model="content" spellcheck="false"></textarea>
+        <ListEditor :key="listId" ref="editor" :initial="initialContent" />
         <div v-if="error" class="editor-error">{{ error }}</div>
       </div>
 
       <div class="modal-actions editor-footer">
-        <span class="editor-hint">Формат: {{ '{ "name": "...", "tasks": ["дело", { "text": "...", "start": "09:00", "end": "10:00", "days": [0, 2] }] } — days: 0=пн … 6=вс, без days — каждый день' }}</span>
+        <span class="editor-hint">Задача без времени — простая строка; время и выбранные дни показываются в сетке недели.</span>
         <div class="editor-btns">
           <button class="btn-primary" @click="save">Сохранить</button>
           <button @click="emit('close')">Отмена</button>

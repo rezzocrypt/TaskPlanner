@@ -690,6 +690,116 @@ select:hover {
   font-size: 13px;
 }
 
+.list-name-input {
+  margin-bottom: 4px;
+}
+
+.task-form-head {
+  margin-bottom: 4px;
+}
+
+.task-form-note {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.task-form-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.task-form-row {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fafbfe;
+  margin-bottom: 8px;
+}
+
+.task-text-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-text-input {
+  flex: 1;
+}
+
+.task-options-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.time-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.time-field input {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+}
+
+.time-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.days-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.days-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.day-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.day-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.day-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.task-empty {
+  margin-bottom: 8px;
+}
+
+.task-add {
+  margin-top: 2px;
+}
+
 .editor-footer {
   border-top: 1px solid var(--border);
   border-bottom: none;
