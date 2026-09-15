@@ -93,10 +93,10 @@ export async function startServer({ dbPath, seedPath } = {}) {
     dbPath ||
     path.join(
       os.tmpdir(),
-      "weekplan-test-" + Date.now() + "-" + Math.floor(Math.random() * 1e6) + ".db"
+      "weekstreak-test-" + Date.now() + "-" + Math.floor(Math.random() * 1e6) + ".db"
     );
   const child = spawn(process.execPath, [path.join(ROOT, "server", "index.js")], {
-    env: { ...process.env, PORT: String(port), WEEKPLAN_DB: tmp },
+    env: { ...process.env, PORT: String(port), WEEKSTREAK_DB: tmp },
     stdio: ["ignore", "pipe", "pipe"],
     cwd: ROOT
   });

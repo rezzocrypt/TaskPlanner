@@ -27,7 +27,7 @@ COPY server ./server
 
 # каталог для SQLite-базы
 RUN mkdir -p /app/data
-ENV WEEKPLAN_DB=/app/data/weekplan.db
+ENV WEEKSTREAK_DB=/app/data/weekstreak.db
 ENV PORT=3000
 EXPOSE 3000
 

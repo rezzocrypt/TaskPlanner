@@ -1,4 +1,4 @@
-# Недельный план (TaskPlanner)
+# WeekStreak
 
 Чек-лист задач на неделю: соберите задачи из нескольких списков, отмечайте выполненное по дням недели и следите за прогрессом.
 
@@ -37,7 +37,7 @@ npm run build
 npm start
 ```
 
-Сервер по умолчанию поднимается на `http://localhost:3000` (порт задаётся переменной окружения `PORT`). Путь к файлу БД можно переопределить через `WEEKPLAN_DB` — это используют тесты.
+Сервер по умолчанию поднимается на `http://localhost:3000` (порт задаётся переменной окружения `PORT`). Путь к файлу БД можно переопределить через `WEEKSTREAK_DB` — это используют тесты.
 
 ### Docker
 
@@ -47,18 +47,18 @@ npm start
 docker compose up -d --build
 ```
 
-Откройте `http://localhost:3000`. База данных сохраняется в Docker-томе (`weekplan-data`), поэтому пересоздание контейнера данные не теряет.
+Откройте `http://localhost:3000`. База данных сохраняется в Docker-томе (`weekstreak-data`), поэтому пересоздание контейнера данные не теряет.
 
 Без compose:
 
 ```bash
-docker build -t weekplan .
-docker run -d --name weekplan -p 3000:3000 -v weekplan-data:/app/data weekplan
+docker build -t weekstreak .
+docker run -d --name weekstreak -p 3000:3000 -v weekstreak-data:/app/data weekstreak
 ```
 
 ## Как это работает
 
-Сервер отдаёт REST API (`/api/*`) и хранит данные в SQLite-базе `data/weekplan.db` (каталог `data/` добавлен в `.gitignore`).
+Сервер отдаёт REST API (`/api/*`) и хранит данные в SQLite-базе `data/weekstreak.db` (каталог `data/` добавлен в `.gitignore`).
 
 Доступ к данным идёт через единый слой абстракции — `server/store.js` (async-интерфейс: `store.*`, без SQL в роутах). Роуты (`server/index.js`) используют только этот интерфейс, что позволяет заменить SQLite на другую СУБД, переписав одну реализацию стора.
 
@@ -118,4 +118,4 @@ docker run -d --name weekplan -p 3000:3000 -v weekplan-data:/app/data weekplan
 npm test
 ```
 
-Тесты используют собственную БД (`WEEKPLAN_DB`), прод-данные в `data/` не затрагиваются.
+Тесты используют собственную БД (`WEEKSTREAK_DB`), прод-данные в `data/` не затрагиваются.

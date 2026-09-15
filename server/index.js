@@ -11,7 +11,7 @@ const DIST_DIR = path.join(ROOT, "dist");
 const PORT = process.env.PORT || 3000;
 const DAY_RE = /^\d{4}-\d{1,2}-\d{1,2}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const SESSION_COOKIE = "weekplan-session";
+const SESSION_COOKIE = "weekstreak-session";
 const SESSION_DAYS = 30;
 const MAX_NAME = 100;
 const COLOR_RE = /^[a-zA-Z0-9#]{3,32}$/;
@@ -378,7 +378,7 @@ if (fs.existsSync(DIST_DIR)) {
     res
       .status(200)
       .type("text/plain")
-      .send("API сервера weekplan работает. Соберите фронтенд: npm run build");
+      .send("API сервера WeekStreak работает. Соберите фронтенд: npm run build");
   });
 }
 
@@ -388,5 +388,5 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log("weekplan server: http://localhost:" + PORT);
+  console.log("WeekStreak server: http://localhost:" + PORT);
 });

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { taskOnDay } from "../src/utils/tasks.js";
 import { ApiClient, startServer, stopServer } from "./helpers.js";
 
-describe("weekplan API", () => {
+describe("weekstreak API", () => {
   let srv;
   let api;
   before(async () => {
@@ -300,7 +300,7 @@ describe("weekplan API", () => {
   test("GET /api/backup — структура", async () => {
     const r = await api.get("/api/backup");
     assert.equal(r.status, 200);
-    assert.equal(r.json.app, "weekplan");
+    assert.equal(r.json.app, "weekstreak");
     assert.equal(r.json.version, 2);
     assert.ok(Array.isArray(r.json.lists));
     assert.ok(r.json.lists.length > 0);
@@ -317,7 +317,7 @@ describe("weekplan API", () => {
     assert.equal(on.status, 200);
 
     const backup = {
-      app: "weekplan",
+      app: "weekstreak",
       version: 2,
       createdAt: new Date().toISOString(),
       lists: [
@@ -361,7 +361,7 @@ describe("weekplan API", () => {
 
   test("POST /api/restore — v1 формат", async () => {
     const v1 = {
-      app: "weekplan",
+      app: "weekstreak",
       version: 1,
       lists: [
         {

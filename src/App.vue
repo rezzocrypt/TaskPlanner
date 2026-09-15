@@ -10,6 +10,7 @@ import EditListModal from "./components/EditListModal.vue";
 import AddListModal from "./components/AddListModal.vue";
 import ShareModal from "./components/ShareModal.vue";
 import AuthForm from "./components/AuthForm.vue";
+import logo from "./assets/logo.png";
 import "./css/App.css";
 
 const { error, loadLists, buildBackup, restoreBackup, attachShared } = useTasks();
@@ -62,7 +63,7 @@ function downloadBackup() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "weekplan-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+  a.download = "weekstreak-backup-" + new Date().toISOString().slice(0, 10) + ".json";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -87,13 +88,8 @@ async function onRestore(e) {
   <div class="page">
     <header>
       <div class="title-block">
-        <svg class="calendar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="16" y1="2" x2="16" y2="6"></line>
-          <line x1="8" y1="2" x2="8" y2="6"></line>
-          <line x1="3" y1="10" x2="21" y2="10"></line>
-        </svg>
-        <h1>Недельный план</h1>
+        <img class="logo" :src="logo" alt="WeekStreak" />
+        <h1>WeekStreak</h1>
       </div>
       <div class="header-right" v-if="loggedIn">
         <div class="auth-area">
@@ -150,10 +146,6 @@ async function onRestore(e) {
       <AddListModal v-if="showAdd" @close="showAdd = false" />
 
       <ShareModal v-if="sharingId" :list-id="sharingId" @close="sharingId = null" />
-
-      <footer>
-        У каждого пользователя свои списки и галочки. Данные хранятся на сервере (Node.js + SQLite), отметки сохраняются отдельно на каждый день. Начальные списки добавляются автоматически при первом заходе.
-      </footer>
     </template>
 
     <template v-else>

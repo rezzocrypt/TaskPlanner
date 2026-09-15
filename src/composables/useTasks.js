@@ -4,7 +4,7 @@ import { sourceColor } from "../utils/colors";
 import { api } from "../utils/api";
 import { getUid } from "../utils/user";
 
-const ATTACHED_KEY_PREFIX = "weekplan-attached-shares-v";
+const ATTACHED_KEY_PREFIX = "weekstreak-attached-shares-v";
 
 const lists = ref([]);
 const selectedIds = ref([]);
@@ -319,7 +319,7 @@ async function deleteList(id) {
 
 function buildBackup() {
   return {
-    app: "weekplan",
+    app: "weekstreak",
     version: 2,
     createdAt: new Date().toISOString(),
     lists: lists.value.filter((l) => !l.readonly).map((l) => {

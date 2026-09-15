@@ -1,14 +1,14 @@
 services:
   app:
     build: .
-    container_name: weekplan
+    container_name: weekstreak
     ports:
       - "3000:3000"
     environment:
-      WEEKPLAN_DB: /app/data/weekplan.db
+      WEEKSTREAK_DB: /app/data/weekstreak.db
     volumes:
-      - weekplan-data:/app/data
+      - weekstreak-data:/app/data
     restart: unless-stopped
 
 volumes:
-  weekplan-data:
+  weekstreak-data:

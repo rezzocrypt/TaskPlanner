@@ -21,14 +21,16 @@ header {
 .title-block {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
-.calendar-icon {
-  width: 20px;
-  height: 20px;
-  color: var(--accent);
+.logo {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
   flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 h1 {
@@ -129,14 +131,4 @@ h1 {
   font-size: 13px;
   line-height: 1.5;
   color: var(--muted);
-}
-
-footer {
-  margin-top: 24px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-footer a {
-  color: var(--accent);
 }

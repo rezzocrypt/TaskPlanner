@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = process.env.WEEKPLAN_DB || path.join(__dirname, "..", "data", "weekplan.db");
+const DB_PATH = process.env.WEEKSTREAK_DB || path.join(__dirname, "..", "data", "weekstreak.db");
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -449,7 +449,7 @@ export const store = {
     const colors = {};
     for (const c of colorRows) colors[String(c.list_id)] = c.color;
     return {
-      app: "weekplan",
+      app: "weekstreak",
       version: 2,
       createdAt: new Date().toISOString(),
       lists: listRows.map((r) => {
