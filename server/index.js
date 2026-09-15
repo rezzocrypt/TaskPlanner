@@ -1,26 +1,9 @@
 import express from "express";
-import {
-  randomBytes,
-  scryptSync,
-  timingSafeEqual
-} from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import db, {
-  getList,
-  readList,
-  createList,
-  updateList,
-  deleteList,
-  ownerOfTask,
-  readNestedState,
-  replaceNestedState,
-  getOwnedTaskIds,
-  seedUserDefaults,
-  normalizeTaskList,
-  ALLOWED_DAY_RE
-} from "./db.js";
+import { store, normalizeTaskList, ALLOWED_DAY_RE } from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
@@ -32,6 +15,8 @@ const SESSION_COOKIE = "weekplan-session";
 const SESSION_DAYS = 30;
 const MAX_NAME = 100;
 const COLOR_RE = /^[a-zA-Z0-9#]{3,32}$/;
+
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 function randomToken() {
   return randomBytes(12).toString("base64url");
@@ -87,64 +72,36 @@ function parseCookies(req) {
 function clearSessionCookie(res) {
   res.append(
     "Set-Cookie",
-    SESSION_COOKIE + "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    SESSION_COOKIE + "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
   );
 }
 
-function createSession(userId, res) {
+async function createSession(userId, res) {
   const token = sessionToken();
   const now = Date.now();
   const expiresAt = now + SESSION_DAYS * 24 * 60 * 60 * 1000;
-  db.prepare("INSERT INTO user_sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(token, userId, now, expiresAt);
+  await store.createSession(token, userId, now, expiresAt);
   res.append(
     "Set-Cookie",
-    SESSION_COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + SESSION_DAYS * 24 * 60 * 60
+    SESSION_COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + SESSION_DAYS * 24 * 60 * 60,
   );
   return token;
 }
 
-function cleanupSessions() {
-  db.prepare("DELETE FROM user_sessions WHERE expires_at < ?").run(Date.now());
-}
-
-function resolveSession(req) {
+async function resolveSession(req) {
   const cookies = parseCookies(req);
   const token = cookies[SESSION_COOKIE];
   if (!token) return null;
-  const row = db.prepare(
-    "SELECT s.user_id, u.email FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?"
-  ).get(token, Date.now());
-  if (!row) return null;
-  return { id: row.user_id, email: row.email };
+  return store.resolveSession(token);
 }
 
 function requireAuth(req, res, next) {
-  const session = resolveSession(req);
-  if (!session) {
-    return res.status(401).json({ error: "Требуется вход" });
-  }
-  req.userId = session.id;
-  req.email = session.email;
-  next();
-}
-
-export function getBackupPayload(owner) {
-  const listRows = db.prepare("SELECT id FROM lists WHERE owner = ? ORDER BY rowid").all(owner);
-  const colorRows = db.prepare("SELECT list_id, color FROM list_colors WHERE owner = ? AND color != ''").all(owner);
-  const colors = {};
-  for (const c of colorRows) colors[String(c.list_id)] = c.color;
-  return {
-    app: "weekplan",
-    version: 2,
-    createdAt: new Date().toISOString(),
-    lists: listRows.map((r) => {
-      const list = readList(owner, r.id);
-      return { id: list.id, name: list.name, tasks: list.tasks };
-    }),
-    dayState: readNestedState(owner),
-    colors
-  };
+  resolveSession(req).then((session) => {
+    if (!session) return res.status(401).json({ error: "Требуется вход" });
+    req.userId = session.id;
+    req.email = session.email;
+    next();
+  }).catch(next);
 }
 
 function parseBackupLists(data) {
@@ -166,7 +123,7 @@ function parseBackupLists(data) {
       } catch (e) {
         content = {};
       }
-      name = String(content && content.name || "").trim();
+      name = String((content && content.name) || "").trim();
       tasks = normalizeTaskList(content && content.tasks);
       tasks = tasks.map((t) => ({ ...t, key: String(t.text) }));
       v1TaskKey[key] = {};
@@ -174,7 +131,7 @@ function parseBackupLists(data) {
         if (!(t.text in v1TaskKey[key])) v1TaskKey[key][t.text] = t.key;
       }
     } else {
-      key = String((raw.id ?? "")).trim();
+      key = String(raw.id ?? "").trim();
       try {
         name = String(raw.name || "").trim();
       } catch (e) {
@@ -190,9 +147,8 @@ function parseBackupLists(data) {
 
 function parseBackupColors(data) {
   const colors = {};
-  const src = data.colors && typeof data.colors === "object" && !Array.isArray(data.colors)
-    ? data.colors
-    : {};
+  const src =
+    data.colors && typeof data.colors === "object" && !Array.isArray(data.colors) ? data.colors : {};
   for (const [key, value] of Object.entries(src)) {
     const color = String(value || "").trim();
     if (color && COLOR_RE.test(color)) colors[String(key)] = color;
@@ -200,21 +156,25 @@ function parseBackupColors(data) {
   return colors;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Routes                                                            */
+/* ------------------------------------------------------------------ */
+
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-app.post("/api/me", (req, res) => {
-  const session = resolveSession(req);
+app.post("/api/me", asyncHandler(async (req, res) => {
+  const session = await resolveSession(req);
   res.json({
     id: session ? session.id : null,
     email: session ? session.email : null,
-    anonymous: !session
+    anonymous: !session,
   });
-});
+}));
 
-app.post("/api/register", (req, res) => {
-  cleanupSessions();
-  if (resolveSession(req)) {
+app.post("/api/register", asyncHandler(async (req, res) => {
+  await store.cleanupSessions();
+  if (await resolveSession(req)) {
     return res.status(409).json({ error: "Вы уже вошли в систему" });
   }
   const email = String(req.body.email || "").trim().toLowerCase();
@@ -225,194 +185,168 @@ app.post("/api/register", (req, res) => {
   if (password.length < 6) {
     return res.status(400).json({ error: "Пароль должен быть не короче 6 символов" });
   }
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  const existing = await store.findUserByEmail(email);
   if (existing) {
     return res.status(409).json({ error: "Пользователь с такой почтой уже существует" });
   }
-  const result = db.prepare("INSERT INTO users (email, password) VALUES (?, ?)")
-    .run(email, hashPassword(password));
-  const userId = result.lastInsertRowid;
-  createSession(userId, res);
-  seedUserDefaults(userId);
-  res.status(201).json({ id: userId, email });
-});
+  const user = await store.createUser(email, hashPassword(password));
+  await createSession(user.id, res);
+  await store.seedUserDefaults(user.id);
+  res.status(201).json({ id: user.id, email });
+}));
 
-app.post("/api/login", (req, res) => {
-  cleanupSessions();
+app.post("/api/login", asyncHandler(async (req, res) => {
+  await store.cleanupSessions();
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
-  const user = db.prepare("SELECT id, email, password FROM users WHERE email = ?").get(email);
+  const user = await store.findUserByEmail(email);
   if (!user || !verifyPassword(password, user.password)) {
     return res.status(401).json({ error: "Неверная почта или пароль" });
   }
-  createSession(user.id, res);
+  await createSession(user.id, res);
   res.json({ id: user.id, email: user.email });
-});
+}));
 
-app.post("/api/logout", (req, res) => {
+app.post("/api/logout", asyncHandler(async (req, res) => {
   const cookies = parseCookies(req);
   const token = cookies[SESSION_COOKIE];
-  if (token) {
-    db.prepare("DELETE FROM user_sessions WHERE token = ?").run(token);
-  }
+  if (token) await store.deleteSession(token);
   clearSessionCookie(res);
   res.json({ ok: true });
-});
+}));
 
-app.get("/api/lists", requireAuth, (req, res) => {
-  const seeded = seedUserDefaults(req.userId);
-  const rows = db.prepare("SELECT id, name FROM lists WHERE owner = ? ORDER BY rowid").all(req.userId);
-  const colorRows = db.prepare("SELECT list_id, color FROM list_colors WHERE owner = ?").all(req.userId);
-  const shareRows = db.prepare("SELECT list_id, token FROM list_shares WHERE owner = ?").all(req.userId);
-  const colorByList = {};
-  for (const c of colorRows) colorByList[c.list_id] = c.color;
-  const tokenByList = {};
-  for (const s of shareRows) tokenByList[s.list_id] = s.token;
-  const lists = rows.map((row) => ({
-    id: row.id,
-    label: row.name || "Без названия",
-    readonly: false,
-    color: colorByList[row.id] || "",
-    token: tokenByList[row.id] || ""
-  }));
+app.get("/api/lists", requireAuth, asyncHandler(async (req, res) => {
+  const seeded = await store.seedUserDefaults(req.userId);
+  const lists = await store.listLists(req.userId);
   res.json({ lists, seeded });
-});
+}));
 
-app.get("/api/lists/:id", requireAuth, (req, res) => {
+app.get("/api/lists/:id", requireAuth, asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  const list = readList(req.userId, id);
+  const list = await store.readList(req.userId, id);
   if (!list) return res.status(404).json({ error: "Список не найден" });
-  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND list_id = ?").get(req.userId, id);
-  res.json({ ...list, color: colorRow && colorRow.color ? colorRow.color : "" });
-});
+  const color = await store.getColor(req.userId, id);
+  res.json({ ...list, color });
+}));
 
-app.post("/api/lists", requireAuth, (req, res) => {
+app.post("/api/lists", requireAuth, asyncHandler(async (req, res) => {
   const parsed = parseListBody(req.body);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  const list = createList(req.userId, parsed.name, parsed.tasks);
+  const list = await store.createList(req.userId, parsed.name, parsed.tasks);
   res.status(201).json({ ...list, color: "" });
-});
+}));
 
-app.put("/api/lists/:id", requireAuth, (req, res) => {
+app.put("/api/lists/:id", requireAuth, asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
+  if (!(await store.listExists(req.userId, id)))
+    return res.status(404).json({ error: "Список не найден" });
   const parsed = parseListBody(req.body);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  const list = updateList(req.userId, id, parsed.name, parsed.tasks);
-  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND list_id = ?").get(req.userId, id);
-  res.json({ ...list, color: colorRow && colorRow.color ? colorRow.color : "" });
-});
+  const list = await store.updateList(req.userId, id, parsed.name, parsed.tasks);
+  const color = await store.getColor(req.userId, id);
+  res.json({ ...list, color });
+}));
 
-app.delete("/api/lists/:id", requireAuth, (req, res) => {
+app.delete("/api/lists/:id", requireAuth, asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  if (!deleteList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
+  if (!(await store.deleteList(req.userId, id)))
+    return res.status(404).json({ error: "Список не найден" });
   res.json({ ok: true });
-});
+}));
 
-app.put("/api/lists/:id/color", requireAuth, (req, res) => {
+app.put("/api/lists/:id/color", requireAuth, asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
+  if (!(await store.listExists(req.userId, id)))
+    return res.status(404).json({ error: "Список не найден" });
   const color = String(req.body.color || "").trim();
   if (color) {
-    db.prepare(
-      "INSERT INTO list_colors (owner, list_id, color) VALUES (?, ?, ?) ON CONFLICT (owner, list_id) DO UPDATE SET color = excluded.color"
-    ).run(req.userId, id, color);
+    await store.setColor(req.userId, id, color);
   } else {
-    db.prepare("DELETE FROM list_colors WHERE owner = ? AND list_id = ?").run(req.userId, id);
+    await store.clearColor(req.userId, id);
   }
   res.json({ ok: true, color });
-});
+}));
 
-app.get("/api/state", requireAuth, (req, res) => {
-  res.json({ state: readNestedState(req.userId) });
-});
+app.get("/api/state", requireAuth, asyncHandler(async (req, res) => {
+  res.json({ state: await store.getDayState(req.userId) });
+}));
 
-app.put("/api/state", requireAuth, (req, res) => {
+app.put("/api/state", requireAuth, asyncHandler(async (req, res) => {
   const state = req.body && req.body.state;
   if (!state || typeof state !== "object" || Array.isArray(state)) {
     return res.status(400).json({ error: "Ожидается объект state" });
   }
-  replaceNestedState(req.userId, state, getOwnedTaskIds(req.userId));
+  const ownedTaskIds = await store.getOwnedTaskIds(req.userId);
+  await store.replaceDayState(req.userId, state, ownedTaskIds);
   res.json({ ok: true });
-});
+}));
 
-app.post("/api/state/toggle", requireAuth, (req, res) => {
+app.post("/api/state/toggle", requireAuth, asyncHandler(async (req, res) => {
   const { day, taskId, done } = req.body || {};
   if (!ALLOWED_DAY_RE.test(String(day || ""))) {
     return res.status(400).json({ error: "Недопустимая дата" });
   }
   const id = parseId(taskId);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор задачи" });
-  if (ownerOfTask(id) !== req.userId) {
+  if ((await store.ownerOfTask(id)) !== req.userId) {
     return res.status(404).json({ error: "Задача не найдена" });
   }
   if (done) {
-db.prepare("INSERT OR REPLACE INTO user_task_state (owner, day, task_id) VALUES (?, ?, ?)")
-      .run(req.userId, String(day), id);
+    await store.setDayState(req.userId, String(day), id);
   } else {
-    db.prepare("DELETE FROM user_task_state WHERE owner = ? AND day = ? AND task_id = ?")
-      .run(req.userId, String(day), id);
+    await store.clearDayState(req.userId, String(day), id);
   }
   res.json({ ok: true });
-});
+}));
 
-app.post("/api/shares", requireAuth, (req, res) => {
+app.post("/api/shares", requireAuth, asyncHandler(async (req, res) => {
   const id = parseId(req.body && req.body.listId);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  if (!getList(req.userId, id)) return res.status(404).json({ error: "Список не найден" });
-  let token = db.prepare("SELECT token FROM list_shares WHERE owner = ? AND list_id = ?").get(req.userId, id);
+  if (!(await store.listExists(req.userId, id)))
+    return res.status(404).json({ error: "Список не найден" });
+  let token = await store.getShareToken(req.userId, id);
   if (!token) {
     token = randomToken();
-    db.prepare("INSERT INTO list_shares (token, owner, list_id) VALUES (?, ?, ?)").run(token, req.userId, id);
-  } else {
-    token = token.token;
+    await store.createShare(req.userId, id, token);
   }
   res.json({ token, listId: id });
-});
+}));
 
-app.delete("/api/shares/:id", requireAuth, (req, res) => {
+app.delete("/api/shares/:id", requireAuth, asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "Недопустимый идентификатор списка" });
-  db.prepare("DELETE FROM list_shares WHERE owner = ? AND list_id = ?").run(req.userId, id);
+  await store.deleteShare(req.userId, id);
   res.json({ ok: true });
-});
+}));
 
-app.get("/api/shares/:token", (req, res) => {
+app.get("/api/shares/:token", asyncHandler(async (req, res) => {
   const token = String(req.params.token || "").replace(/[^a-zA-Z0-9_-]/g, "");
   if (!token) return res.status(400).json({ error: "Недопустимый токен" });
-  const share = db.prepare("SELECT * FROM list_shares WHERE token = ?").get(token);
+  const share = await store.findShareByToken(token);
   if (!share) return res.status(404).json({ error: "Средний список не найден" });
-  const list = readList(share.owner, share.list_id);
+  const list = await store.readList(share.owner, share.list_id);
   if (!list) return res.status(404).json({ error: "Список удалён владельцем" });
-  const colorRow = db.prepare("SELECT color FROM list_colors WHERE owner = ? AND list_id = ?").get(share.owner, share.list_id);
-  res.json({
-    ...list,
-    owner: share.owner,
-    color: colorRow && colorRow.color ? colorRow.color : ""
-  });
-});
+  const color = await store.getColor(share.owner, share.list_id);
+  res.json({ ...list, owner: share.owner, color });
+}));
 
-app.get("/api/users/:id/state", (req, res) => {
+app.get("/api/users/:id/state", asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: "Недопустимый идентификатор пользователя" });
-  }
-  const user = db.prepare("SELECT id FROM users WHERE id = ?").get(id);
-  if (!user) {
-    return res.status(404).json({ error: "Пользователь не найден" });
-  }
-  res.json({ state: readNestedState(id) });
-});
+  if (!id) return res.status(400).json({ error: "Недопустимый идентификатор пользователя" });
+  const user = await store.findUserById(id);
+  if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+  res.json({ state: await store.getDayState(id) });
+}));
 
-app.get("/api/backup", requireAuth, (req, res) => {
-  res.json(getBackupPayload(req.userId));
-});
+app.get("/api/backup", requireAuth, asyncHandler(async (req, res) => {
+  res.json(await store.getBackupData(req.userId));
+}));
 
-app.post("/api/restore", requireAuth, (req, res) => {
+app.post("/api/restore", requireAuth, asyncHandler(async (req, res) => {
   const data = req.body;
   if (!data || typeof data !== "object") {
     return res.status(400).json({ error: "Файл бэкапа повреждён или не распознан" });
@@ -422,71 +356,17 @@ app.post("/api/restore", requireAuth, (req, res) => {
     return res.status(400).json({ error: "В бэкапе нет списков" });
   }
   const colors = parseBackupColors(data);
-
-  const insertList = db.prepare("INSERT INTO lists (owner, name) VALUES (?, ?)");
-  const insertTask = db.prepare(
-    "INSERT INTO tasks (list_id, position, text, start_time, end_time) VALUES (?, ?, ?, ?, ?)"
-  );
-  const insertDay = db.prepare("INSERT OR IGNORE INTO task_days (task_id, day) VALUES (?, ?)");
-  const insColor = db.prepare(
-    "INSERT INTO list_colors (owner, list_id, color) VALUES (?, ?, ?) ON CONFLICT (owner, list_id) DO UPDATE SET color = excluded.color"
-  );
-  const insState = db.prepare("INSERT OR REPLACE INTO user_task_state (owner, day, task_id) VALUES (?, ?, ?)");
-
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM lists WHERE owner = ?").run(req.userId);
-    db.prepare("DELETE FROM list_colors WHERE owner = ?").run(req.userId);
-    db.prepare("DELETE FROM list_shares WHERE owner = ?").run(req.userId);
-    db.prepare("DELETE FROM user_task_state WHERE owner = ?").run(req.userId);
-
-    const listIdByKey = {};
-    const oldTaskIdMap = {};
-    for (const l of lists) {
-      const listId = insertList.run(req.userId, l.name).lastInsertRowid;
-      if (l.key) listIdByKey[l.key] = listId;
-      l.tasks.forEach((t, pos) => {
-        const taskId = insertTask.run(listId, pos, t.text, t.start, t.end).lastInsertRowid;
-        for (const d of t.days) insertDay.run(taskId, d);
-        if (!isV1 && t.key) oldTaskIdMap[t.key] = taskId;
-        if (isV1 && t.key) v1TaskKey[l.key][t.text] = taskId;
-      });
-    }
-
-    for (const [key, color] of Object.entries(colors)) {
-      const listId = listIdByKey[key];
-      if (listId) insColor.run(req.userId, listId, color);
-    }
-
-    const dayState =
-      data.dayState && typeof data.dayState === "object" && !Array.isArray(data.dayState)
-        ? data.dayState
-        : {};
-    if (isV1) {
-      for (const [day, files] of Object.entries(dayState)) {
-        if (!DAY_RE.test(day) || !files || typeof files !== "object") continue;
-        for (const [file, tasks] of Object.entries(files)) {
-          if (!tasks || typeof tasks !== "object") continue;
-          for (const [text, done] of Object.entries(tasks)) {
-            if (!done) continue;
-            const tid = v1TaskKey[file] && v1TaskKey[file][text];
-            if (tid) insState.run(req.userId, day, tid);
-          }
-        }
-      }
-    } else {
-      for (const [day, tasks] of Object.entries(dayState)) {
-        if (!DAY_RE.test(day) || !tasks || typeof tasks !== "object") continue;
-        for (const [taskId, done] of Object.entries(tasks)) {
-          if (!done) continue;
-          const tid = oldTaskIdMap[String(taskId)];
-          if (tid) insState.run(req.userId, day, tid);
-        }
-      }
-    }
-  });
-  tx();
+  const dayState =
+    data.dayState && typeof data.dayState === "object" && !Array.isArray(data.dayState)
+      ? data.dayState
+      : {};
+  await store.restore(req.userId, { lists, colors, dayState, isV1, v1TaskKey });
   res.json({ ok: true, lists: lists.length });
-});
+}));
+
+/* ------------------------------------------------------------------ */
+/*  Static files + SPA fallback                                        */
+/* ------------------------------------------------------------------ */
 
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
@@ -502,9 +382,9 @@ if (fs.existsSync(DIST_DIR)) {
   });
 }
 
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => {
   console.error(err);
-  res.status(500).json({ error: String(err && err.message || err) });
+  res.status(500).json({ error: String((err && err.message) || err) });
 });
 
 app.listen(PORT, () => {
