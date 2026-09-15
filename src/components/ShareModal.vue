@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref } from "vue";
 import { useTasks } from "../composables/useTasks";
+import "../css/ShareModal.css";
 
 const props = defineProps({
   listId: { type: String, required: true }

@@ -1,0 +1,38 @@
+:root {
+  --bg: #f4f6fb;
+  --card: #ffffff;
+  --border: #e3e7f0;
+  --text: #1f2733;
+  --muted: #8a93a6;
+  --accent: #4a7df0;
+  --accent-soft: #e8effe;
+  --success: #2fa15d;
+  --shadow: 0 2px 10px rgba(30, 50, 90, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+select,
+button {
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover,
+select:hover {
+  border-color: var(--accent);
+}

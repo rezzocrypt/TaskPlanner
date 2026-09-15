@@ -1,0 +1,73 @@
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.modal-list-name {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.stats {
+  padding: 8px 18px 18px;
+  overflow-y: auto;
+}
+
+.stats .s-row {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.stats .s-row:last-child {
+  border-bottom: none;
+}
+
+.stats .s-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+
+.stats .s-name {
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.stats .s-total {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.stats .s-total.bad {
+  color: #c0392b;
+  font-weight: 700;
+}
+
+.stats .s-row.bad .bar-fill {
+  background: #e67e22;
+}
+
+.stats .s-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 24px 0;
+}
+
+.stats .bar {
+  height: 8px;
+  background: var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.stats .bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 6px;
+  transition: width 0.3s;
+}

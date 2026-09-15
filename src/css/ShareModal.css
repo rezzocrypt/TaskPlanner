@@ -1,0 +1,15 @@
+.share-note {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.share-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.share-row .field-input {
+  flex: 1;
+}

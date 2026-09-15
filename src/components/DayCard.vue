@@ -4,6 +4,7 @@ import { useTasks } from "../composables/useTasks";
 import { dateKey, sameDay, shortDate, DAY_NAMES } from "../utils/date";
 import { taskOnDay, startMinutes } from "../utils/tasks";
 import TaskItem from "./TaskItem.vue";
+import "../css/DayCard.css";
 
 const props = defineProps({
   day: { type: Date, required: true },

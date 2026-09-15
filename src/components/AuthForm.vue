@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from "vue";
 import { useAuth } from "../composables/useAuth";
+import "../css/AuthForm.css";
 
 const props = defineProps({
   initialMode: { type: String, default: "login" }

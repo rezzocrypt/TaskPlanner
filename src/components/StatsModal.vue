@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useTasks } from "../composables/useTasks";
 import { addDays, dateKey, dayIndexFromKey } from "../utils/date";
 import { taskText, taskOnDay } from "../utils/tasks";
+import "../css/StatsModal.css";
 
 const emit = defineEmits(["close"]);
 

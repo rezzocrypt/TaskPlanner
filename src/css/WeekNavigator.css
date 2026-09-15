@@ -1,0 +1,12 @@
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nav .week-label {
+  font-weight: 600;
+  min-width: 180px;
+  text-align: center;
+}

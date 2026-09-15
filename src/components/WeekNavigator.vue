@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { useTasks } from "../composables/useTasks";
 import { addDays, shortDate } from "../utils/date";
+import "../css/WeekNavigator.css";
 
 const { weekStart, prevWeek, nextWeek, goToday } = useTasks();
 

@@ -1,5 +1,6 @@
 <script setup>
 import { useTasks } from "../composables/useTasks";
+import "../css/ListSelector.css";
 
 const emit = defineEmits(["edit", "add", "share"]);
 

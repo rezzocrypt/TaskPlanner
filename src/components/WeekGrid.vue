@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useTasks } from "../composables/useTasks";
 import { addDays, dateKey } from "../utils/date";
 import DayCard from "./DayCard.vue";
+import "../css/WeekGrid.css";
 
 const { weekStart } = useTasks();
 

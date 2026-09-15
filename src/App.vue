@@ -10,6 +10,7 @@ import EditListModal from "./components/EditListModal.vue";
 import AddListModal from "./components/AddListModal.vue";
 import ShareModal from "./components/ShareModal.vue";
 import AuthForm from "./components/AuthForm.vue";
+import "./css/App.css";
 
 const { error, loadLists, buildBackup, restoreBackup, attachShared } = useTasks();
 const { user, load: loadAuth, logout } = useAuth();

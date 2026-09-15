@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from "vue";
 import { DAY_NAMES } from "../utils/date";
+import "../css/ListEditor.css";
 
 const props = defineProps({
   initial: { type: [String, Object], default: "" }
